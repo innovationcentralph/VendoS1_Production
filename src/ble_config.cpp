@@ -7,22 +7,8 @@
 // =============================================================================
 // UUIDs
 //
-// The Config characteristic UUID is fixed by docs/BLE_CONFIG_CONTRACT.md /
-// the app team's Board-Firmware-Contract.md.
-//
-// The SERVICE UUID is NOT given in either contract doc available to this
-// firmware — Board-Firmware-Contract.md (the master doc that defines the
-// service and any Device Info characteristics) lives outside this repo and
-// wasn't available when this was written. The value below is a PLACEHOLDER
-// that only follows the same custom 128-bit base as the Config characteristic
-// so this firmware has *a* valid service to advertise for bench testing.
-//
-// TODO: replace BLE_SERVICE_UUID with the real value once
-// Board-Firmware-Contract.md's service UUID is confirmed with the app team —
-// do this before any real mobile app tries to discover this board, or it
-// simply won't find the service.
 // =============================================================================
-#define BLE_SERVICE_UUID      "6a400001-0000-1000-8000-00805f9b0001"  // PLACEHOLDER — see above
+#define BLE_SERVICE_UUID      "6a400001-0000-1000-8000-00805f9b0001"
 #define BLE_CONFIG_CHAR_UUID  "6a40f005-0000-1000-8000-00805f9b0001"  // from the contract
 
 #define BLE_DEVICE_NAME       "VendoS1"

@@ -1,5 +1,6 @@
 #include "cli.h"
 #include "config.h"
+#include "identity.h"
 #include "periph.h"
 #include "display.h"
 #include "wdt.h"
@@ -509,12 +510,117 @@ static void cmd_lcd_status(const char* args, Stream& out) {
     out.println("OK");
 }
 
+// AT+SERIAL?                       — report the factory serial (or that there isn't one)
+// AT+SERIAL=VLABS-S1-NNNNN       — set it, ONCE
+//
+// This is the app's `device_id`. Unlike every other setter here it does not
+// edit the config blob and does not need AT+RESET — identity lives in its own
+// NVS namespace (see src/identity.h for why) and is read straight from there.
+//
+// WRITE-ONCE, deliberately. A freely rewritable serial would let anyone with a
+// cable at J7 retype board A's identity onto board B, after which the two
+// boards report as one machine and their earnings merge into a single backend
+// row — quietly, and in whichever direction suited whoever did it. Unlike the
+// free-vend exposure in REVIEW_FINDINGS.md R22, that corrupts data rather than
+// giving away a vend, so it would never show up in a till count.
+// AT+SERIAL_ERASE is the RMA/refurb path.
+static void cmd_serial(const char* args, Stream& out) {
+    if (args[0] == '?' || args[0] == '\0') {
+        identity_print(out);
+        if (!identity_serial_valid()) {
+            out.println("NOTE: this board has no identity — the app cannot key earnings to it.");
+        }
+        out.println("OK");
+        return;
+    }
+
+    if (args[0] != '=') {
+        out.println("ERROR: usage  AT+SERIAL=" IDENTITY_SERIAL_PATTERN "   (or AT+SERIAL? to read)");
+        return;
+    }
+
+    const char* val = args + 1;
+    while (*val == ' ') ++val;
+
+    switch (identity_serial_set(val)) {
+        case IDENTITY_SET_OK: {
+            char serial[IDENTITY_SERIAL_BUF];
+            identity_serial_get(serial);
+            out.print("serial = "); out.println(serial);
+            out.println("(stored and verified — no reset needed; this board is now provisioned)");
+            out.println("OK");
+            break;
+        }
+        case IDENTITY_SET_ALREADY: {
+            char serial[IDENTITY_SERIAL_BUF];
+            identity_serial_get(serial);
+            out.print("ERROR: serial already set to "); out.println(serial);
+            out.println("Write-once by design. To re-provision (RMA/refurb) use:");
+            out.println("  AT+SERIAL_ERASE=<token>   — see AT+SERIAL_ERASE? for this board's token");
+            break;
+        }
+        case IDENTITY_SET_BAD_FORMAT:
+            out.println("ERROR: expected " IDENTITY_SERIAL_PATTERN
+                        "  (exactly " IDENTITY_SERIAL_DIGITS_STR " digits)");
+            out.println("  e.g. AT+SERIAL=" IDENTITY_SERIAL_EXAMPLE);
+            break;
+        case IDENTITY_SET_NVS_FAIL:
+            out.println("ERROR: NVS write failed — serial NOT stored. Retry; if it persists the");
+            out.println("       nvs partition may be full or damaged.");
+            break;
+    }
+}
+
+// AT+SERIAL_ERASE?         — show this board's erase token
+// AT+SERIAL_ERASE=<token>  — clear the serial so it can be set again
+//
+// The token is the last 3 bytes of this board's own MAC. It is not a secret and
+// is not meant to be: the point is that clearing an identity should require
+// being able to read the board in your hand, so a mistyped or pasted command
+// cannot orphan a different unit.
+static void cmd_serial_erase(const char* args, Stream& out) {
+    char token[IDENTITY_TOKEN_BUF];
+    identity_erase_token(token);
+
+    if (args[0] == '?' || args[0] == '\0') {
+        out.print("erase token for THIS board = "); out.println(token);
+        out.print("usage: AT+SERIAL_ERASE="); out.println(token);
+        out.println("OK");
+        return;
+    }
+
+    if (args[0] != '=') {
+        out.println("ERROR: usage  AT+SERIAL_ERASE=<token>   (AT+SERIAL_ERASE? shows it)");
+        return;
+    }
+
+    if (!identity_serial_valid()) {
+        out.println("ERROR: no serial stored — nothing to erase");
+        return;
+    }
+
+    const char* val = args + 1;
+    while (*val == ' ') ++val;
+
+    if (!identity_serial_erase(val)) {
+        out.println("ERROR: wrong token, or the NVS erase failed — serial NOT cleared");
+        out.println("       AT+SERIAL_ERASE? shows the token for the board you are connected to.");
+        return;
+    }
+
+    out.println("serial erased — this board is now UNPROVISIONED");
+    out.println("Set a new one with AT+SERIAL=" IDENTITY_SERIAL_PATTERN);
+    out.println("OK");
+}
+
 // ============================================================================
 // Command table
 //
 // ORDERING: dispatch() takes the first prefix match, so longer names must come
 // before any shorter name they start with. AT+COIN_POLARITY and AT+COINS_REQ
-// both precede AT+COIN — otherwise "AT+COIN" would swallow both.
+// both precede AT+COIN — otherwise "AT+COIN" would swallow both. Likewise
+// AT+SERIAL_ERASE precedes AT+SERIAL, or an erase would arrive at cmd_serial()
+// as args="_ERASE=..." and be rejected as a bad format.
 // ============================================================================
 static const CliCommand kCommands[] = {
     { "AT+HELP?",        "List all supported commands",                          cmd_help        },
@@ -544,6 +650,9 @@ static const CliCommand kCommands[] = {
     { "AT+WDT?",         "External TPL5010 watchdog status + liveness ages",     cmd_wdt         },
     { "AT+STRAP?",       "JP10 role strap position + last reset reason",         cmd_strap       },
     { "AT+LCD?",         "LCD health, I2C address, recovery count",              cmd_lcd_status  },
+    // AT+SERIAL_ERASE must precede AT+SERIAL — see the ORDERING note above.
+    { "AT+SERIAL_ERASE", "Clear the serial for re-provisioning: AT+SERIAL_ERASE=<token> (AT+SERIAL_ERASE? shows it)", cmd_serial_erase },
+    { "AT+SERIAL",       "Board identity (app device_id): AT+SERIAL? or AT+SERIAL=" IDENTITY_SERIAL_PATTERN " (write-once)", cmd_serial },
 };
 static const size_t kNumCommands = sizeof(kCommands) / sizeof(kCommands[0]);
 
