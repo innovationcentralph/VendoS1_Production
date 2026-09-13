@@ -52,10 +52,15 @@ void periph_init() {
     pinMode(PIN_BTN2,     INPUT);   // SW3, R16 10K
     pinMode(PIN_USER_BTN, INPUT);   // J1,  R10 1K
 
-    // Coin pulse input. Internal pull-up kept: the PC817 bias resistors R22/R25
-    // do not obviously pull the output anywhere, and an active-LOW pulse (the
-    // default, see AppConfig::coin_active_high) needs the line held high at idle.
-    pinMode(PIN_COIN_IN,  INPUT_PULLUP);
+    // Coin pulse input. Plain INPUT like every other input on this board: R25 is
+    // a hard 1K external pull-up from +3.3V onto COIN_IN, so the internal ~45K
+    // adds nothing it can win. (This line was INPUT_PULLUP, justified by the
+    // pre-2026-09-14 belief that the pulse was active-LOW and the line needed
+    // holding high at idle. The schematic says the opposite — U4 conducts at
+    // idle and pulls COIN_IN down; see AppConfig::coin_active_high — so that
+    // reasoning was backwards, and the internal pull-up was fighting the opto
+    // rather than helping it.)
+    pinMode(PIN_COIN_IN,  INPUT);
 
     // Board-ID strap — read-only. Driving it would fight the JP10 jumper.
     pinMode(PIN_I2C_CONF, INPUT);

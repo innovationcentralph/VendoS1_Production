@@ -37,7 +37,7 @@ static const AppConfig kDefaults = {
     70,                 // beep_end_on_ms
     80,                 // beep_off_ms
     1000,               // price_per_credit_cents (P10.00)
-    false,              // coin_active_high — idle HIGH, pulse LOW (see config.h)
+    true,               // coin_active_high — idle LOW, pulse HIGH (see config.h)
 };
 
 void config_defaults(AppConfig* cfg) {

@@ -156,17 +156,35 @@ struct AppConfig {
     // APP_CONFIG_MAGIC diverges from the STM32 value.
     // -------------------------------------------------------------------------
     bool     coin_active_high;      // which level on PIN_COIN_IN counts as a coin pulse.
-                                     // The STM32 hard-coded "idle LOW, pulse HIGH" because
-                                     // its acceptor wiring was known. On the S1 the pulse
-                                     // passes through the PC817 (U4) opto and the schematic
-                                     // does not say which way its output swings — the
-                                     // bring-up harness had to make the counting edge
-                                     // switchable for the same reason. This is money, so it
-                                     // is a settable field rather than a guess baked into
-                                     // the build: false (default) = idle HIGH, pulse LOW,
-                                     // which is the usual opto-output-with-pull-up shape.
-                                     // Confirm on the bench with AT+COIN? before shipping a
-                                     // board (see docs/PENDING.md item 3).
+                                     // The STM32 hard-coded this because its acceptor wiring
+                                     // was known. On the S1 it stays a settable field — this
+                                     // is money, and a wrong compile-time constant is not
+                                     // recoverable in the field.
+                                     //
+                                     // DEFAULT true = idle LOW, pulse HIGH. Derived from the
+                                     // S1 schematic 2026-09-14 (COIN_SLOT sheet), not guessed:
+                                     //
+                                     //   idle  — the acceptor output (J10-2) does not sink, so
+                                     //           +5V -> R22 1K -> R24 1K -> U4 LED -> GND puts
+                                     //           ~1.9 mA through the LED. LED ON, phototransistor
+                                     //           conducts, COIN_IN is pulled DOWN.  => idle LOW
+                                     //   pulse — the acceptor sinks J10-2 to ~0.2 V, the LED
+                                     //           loses its forward voltage and turns OFF, the
+                                     //           phototransistor opens and R25 1K pulls COIN_IN
+                                     //           up to +3.3 V.                      => pulse HIGH
+                                     //
+                                     // Corroborated by the fail-safe: an unplugged acceptor
+                                     // floats J10-2 to +5V via R22, so the LED stays on and
+                                     // COIN_IN reads LOW — i.e. idle. Under the previous
+                                     // default (false) a disconnected harness would instead have
+                                     // read as a permanently asserted coin line.
+                                     //
+                                     // NOT bench-confirmed. See docs/PENDING.md item 3 for the
+                                     // measurement that closes it — and note the analog margin
+                                     // warning there: R25 = 1K asks the opto to sink 3.3 mA off
+                                     // a 1.9 mA LED, so a low-CTR part may never pull COIN_IN to
+                                     // a valid logic LOW at all. Measure the idle voltage with a
+                                     // meter, not just AT+COIN?.
 };
 
 // Load config from NVS into *cfg.
