@@ -4,6 +4,7 @@
 #include "periph.h"
 #include "config.h"
 #include "identity.h"
+#include "rtc.h"
 #include "display.h"
 #include "wdt.h"
 #include "version.h"
@@ -100,6 +101,24 @@ void setup() {
     // turn up in the app, so it says so here every boot. Two NVS reads.
     identity_print(Serial);
 
+    // Clock. Reads the SLM1302 once and seeds the system clock — from here on
+    // time(nullptr) is the running clock and the RTC is only a power-loss
+    // backup (see src/rtc.h). Also forces trickle charging OFF, which is why it
+    // runs every boot rather than lazily on first use.
+    rtc_init();
+    if (!rtc_valid()) {
+        Serial.println("Time:   NOT SET — event timestamps will be flagged ts_unverified");
+        Serial.println("        set with AT+RTC=<epoch> or AT+RTC=YYYY-MM-DD HH:MM:SS (UTC)");
+    } else {
+        RtcTime t;
+        if (rtc_read_raw(&t)) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Time:   20%02u-%02u-%02u %02u:%02u:%02u UTC",
+                     t.year, t.month, t.date, t.hour, t.min, t.sec);
+            Serial.println(buf);
+        }
+    }
+
     // Why the board last rebooted. On this hardware a watchdog reset and a press
     // of SW1 are indistinguishable (shared ESP_EN net), but telling either apart
     // from a panic or a brownout is the first question any field fault raises.
@@ -181,6 +200,13 @@ void setup() {
 // equivalent.
 // =============================================================================
 void loop() {
+    // Hourly writeback of the system clock to the RTC, so a power cut loses at
+    // most an hour's drift. Deliberately here and not in app.cpp: app.cpp is
+    // diffable against the STM32, which has no RTC. Also deliberately OUTSIDE
+    // the ENABLE_CLI guard below — a production build drops the CLI but must
+    // keep the clock fresh. Costs a millis() compare per 10 ms tick.
+    rtc_service();
+
 #ifdef ENABLE_CLI
     while (Serial.available() > 0) {
         cli_feed_char((char)Serial.read(), Serial);

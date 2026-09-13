@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "config.h"
 #include "identity.h"
+#include "rtc.h"
 #include "periph.h"
 #include "display.h"
 #include "wdt.h"
@@ -510,6 +511,73 @@ static void cmd_lcd_status(const char* args, Stream& out) {
     out.println("OK");
 }
 
+// AT+RTC?                          — clock status, both chip and system
+// AT+RTC=<epoch>                   — set from epoch seconds UTC (what BLE sends)
+// AT+RTC=YYYY-MM-DD HH:MM:SS       — set from a human-typed UTC datetime
+//
+// Both forms exist for a reason: the BLE Time Sync characteristic (6a40f002)
+// carries epoch_utc:u32, so epoch is the native form and scripts should use it;
+// but nobody sitting at a bench can type an epoch without a converter.
+//
+// TIME IS UTC, always. There is no local-time setter and should not be — the
+// event log and the app contract are both UTC, and a board that stored local
+// time would silently produce timestamps 8 hours out.
+static void cmd_rtc(const char* args, Stream& out) {
+    if (args[0] == '?' || args[0] == '\0') {
+        rtc_print(out);
+        out.println("OK");
+        return;
+    }
+
+    if (args[0] != '=') {
+        out.println("ERROR: usage  AT+RTC=<epoch>  or  AT+RTC=YYYY-MM-DD HH:MM:SS  (UTC)");
+        return;
+    }
+
+    const char* val = args + 1;
+    while (*val == ' ') ++val;
+
+    uint32_t epoch = 0;
+    if (strchr(val, '-') != nullptr) {
+        int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
+        const int n = sscanf(val, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &se);
+        if (n < 3) {
+            out.println("ERROR: expected YYYY-MM-DD HH:MM:SS (time optional, UTC)");
+            return;
+        }
+        if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
+            h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59) {
+            out.println("ERROR: field out of range");
+            return;
+        }
+        RtcTime t;
+        t.year  = (uint8_t)(y - 2000);
+        t.month = (uint8_t)mo;
+        t.date  = (uint8_t)d;
+        t.hour  = (uint8_t)h;
+        t.min   = (uint8_t)mi;
+        t.sec   = (uint8_t)se;
+        t.dow   = 1;                    // recomputed by rtc_set_epoch
+        epoch = rtc_time_to_epoch(&t);
+    } else {
+        epoch = (uint32_t)strtoul(val, nullptr, 10);
+    }
+
+    if (!rtc_set_epoch(epoch)) {
+        out.print("ERROR: rejected — epoch must be within ");
+        out.print((unsigned long)RTC_EPOCH_MIN); out.print("..");
+        out.print((unsigned long)RTC_EPOCH_MAX);
+        out.println(" (2026..2050), and the chip must be writable");
+        out.println("  A value outside that window is almost always an uninitialised");
+        out.println("  clock, and accepting it would corrupt event-log ordering.");
+        return;
+    }
+
+    out.println("time set (chip + system clock, no reset needed)");
+    rtc_print(out);
+    out.println("OK");
+}
+
 // AT+SERIAL?                       — report the factory serial (or that there isn't one)
 // AT+SERIAL=VLABS-S1-NNNNN       — set it, ONCE
 //
@@ -650,6 +718,7 @@ static const CliCommand kCommands[] = {
     { "AT+WDT?",         "External TPL5010 watchdog status + liveness ages",     cmd_wdt         },
     { "AT+STRAP?",       "JP10 role strap position + last reset reason",         cmd_strap       },
     { "AT+LCD?",         "LCD health, I2C address, recovery count",              cmd_lcd_status  },
+    { "AT+RTC",          "Clock: AT+RTC? or AT+RTC=<epoch> or AT+RTC=YYYY-MM-DD HH:MM:SS (UTC)", cmd_rtc },
     // AT+SERIAL_ERASE must precede AT+SERIAL — see the ORDERING note above.
     { "AT+SERIAL_ERASE", "Clear the serial for re-provisioning: AT+SERIAL_ERASE=<token> (AT+SERIAL_ERASE? shows it)", cmd_serial_erase },
     { "AT+SERIAL",       "Board identity (app device_id): AT+SERIAL? or AT+SERIAL=" IDENTITY_SERIAL_PATTERN " (write-once)", cmd_serial },
