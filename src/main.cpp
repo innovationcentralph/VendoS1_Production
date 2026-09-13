@@ -3,6 +3,7 @@
 #include "app.h"
 #include "periph.h"
 #include "config.h"
+#include "identity.h"
 #include "display.h"
 #include "wdt.h"
 #include "version.h"
@@ -93,6 +94,11 @@ void setup() {
     Serial.println("=== Vendo S1 Production boot ===");
     Serial.print("Firmware version: "); Serial.println(FW_VERSION_STRING);
     Serial.println("Port of VendoBoard STM32 production firmware (main @ ee8e253)");
+
+    // Identity, before anything else that might scroll. An unprovisioned board
+    // is otherwise indistinguishable from a healthy one until earnings fail to
+    // turn up in the app, so it says so here every boot. Two NVS reads.
+    identity_print(Serial);
 
     // Why the board last rebooted. On this hardware a watchdog reset and a press
     // of SW1 are indistinguishable (shared ESP_EN net), but telling either apart

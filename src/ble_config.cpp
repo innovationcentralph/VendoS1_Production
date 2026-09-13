@@ -1,31 +1,48 @@
 #include "ble_config.h"
 #include "config.h"
+#include "identity.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <stdio.h>
 
 // =============================================================================
 // UUIDs
 //
-// The Config characteristic UUID is fixed by docs/BLE_CONFIG_CONTRACT.md /
-// the app team's Board-Firmware-Contract.md.
-//
-// The SERVICE UUID is NOT given in either contract doc available to this
-// firmware — Board-Firmware-Contract.md (the master doc that defines the
-// service and any Device Info characteristics) lives outside this repo and
-// wasn't available when this was written. The value below is a PLACEHOLDER
-// that only follows the same custom 128-bit base as the Config characteristic
-// so this firmware has *a* valid service to advertise for bench testing.
-//
-// TODO: replace BLE_SERVICE_UUID with the real value once
-// Board-Firmware-Contract.md's service UUID is confirmed with the app team —
-// do this before any real mobile app tries to discover this board, or it
-// simply won't find the service.
 // =============================================================================
-#define BLE_SERVICE_UUID      "6a400001-0000-1000-8000-00805f9b0001"  // PLACEHOLDER — see above
+#define BLE_SERVICE_UUID      "6a400001-0000-1000-8000-00805f9b0001"
 #define BLE_CONFIG_CHAR_UUID  "6a40f005-0000-1000-8000-00805f9b0001"  // from the contract
 
-#define BLE_DEVICE_NAME       "VendoS1"
+// Advertised name.
+//
+// A provisioned board advertises its serial VERBATIM — "VLABS-S1-00001". Name,
+// device_id and the number on the sticker are then the same string, so a board
+// can be identified in a scanner list without connecting to it.
+//
+// This replaced the old fixed "VendoS1" (user's decision, 2026-09-13: "App will
+// adapt"). It is a BREAKING CHANGE for any client that discovered boards by
+// matching that name — see docs/APP_BLE_PLAN.md D1/A5. Clients should discover
+// by BLE_SERVICE_UUID, which is what it is for.
+//
+// An UNPROVISIONED board advertises "VLABS-UNSET-<MAC last 2 bytes>" instead.
+// The UNSET token is deliberately not a unit number: a board that missed the
+// factory step must be obviously distinguishable in a scanner list, not merely
+// a plausible-looking serial nobody recognizes.
+#define BLE_DEVICE_NAME_MAX 24
+
+static char s_device_name[BLE_DEVICE_NAME_MAX];
+
+static void build_device_name() {
+    char serial[IDENTITY_SERIAL_BUF];
+    if (identity_serial_get(serial)) {
+        snprintf(s_device_name, sizeof(s_device_name), "%s", serial);
+    } else {
+        uint8_t mac[6];
+        identity_mac(mac);
+        snprintf(s_device_name, sizeof(s_device_name), "VLABS-UNSET-%02X%02X",
+                 mac[4], mac[5]);
+    }
+}
 
 // Wire format from docs/BLE_CONFIG_CONTRACT.md: 37 bytes, little-endian,
 // fixed-width. config_version is a BLE-facing schema guard only — it has no
@@ -246,7 +263,8 @@ class ConfigCharCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 void ble_config_init() {
-    NimBLEDevice::init(BLE_DEVICE_NAME);
+    build_device_name();
+    NimBLEDevice::init(s_device_name);
     NimBLEServer* server = NimBLEDevice::createServer();
     NimBLEService* service = server->createService(BLE_SERVICE_UUID);
 
@@ -258,11 +276,39 @@ void ble_config_init() {
 
     service->start();
 
+    // Advertisement and scan response are built explicitly rather than letting
+    // NimBLE place the name automatically, because the two do not both fit in
+    // one packet:
+    //
+    //   adv payload = 31 B max
+    //     flags                       3 B
+    //     complete 128-bit service   18 B   <- the UUID is the expensive part
+    //                               ----
+    //                                21 B, leaving 10 B => ~8 chars of name
+    //
+    // The old fixed "VendoS1" (7 chars) squeaked in, which is why the original
+    // code worked. "VLABS-S1-00001" (14) does not, and an over-long name is
+    // silently truncated or drops the advertisement entirely. So the UUID stays
+    // in the advertisement -- clients should discover by UUID, and it must be
+    // there for them to do so -- and the name moves to the scan response, which
+    // is a second 31-byte budget. Scanners request it automatically.
     NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
-    advertising->addServiceUUID(BLE_SERVICE_UUID);
+
+    NimBLEAdvertisementData advData;
+    advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+    advData.setCompleteServices(NimBLEUUID(BLE_SERVICE_UUID));
+    advertising->setAdvertisementData(advData);
+
+    NimBLEAdvertisementData scanData;
+    scanData.setName(s_device_name);
+    advertising->setScanResponseData(scanData);
+
     advertising->setScanResponse(true);
     NimBLEDevice::startAdvertising();
 
-    Serial.print("BLE advertising as \""); Serial.print(BLE_DEVICE_NAME);
+    Serial.print("BLE advertising as \""); Serial.print(s_device_name);
     Serial.println("\" — see docs/BLE_CONFIG_CONTRACT.md to test with nRF Connect");
+    if (!identity_serial_valid()) {
+        Serial.println("  (name suffix is the MAC — this board is UNPROVISIONED, see AT+SERIAL?)");
+    }
 }
