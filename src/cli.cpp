@@ -2,6 +2,7 @@
 #include "config.h"
 #include "identity.h"
 #include "rtc.h"
+#include "counters.h"
 #include "periph.h"
 #include "display.h"
 #include "wdt.h"
@@ -511,6 +512,16 @@ static void cmd_lcd_status(const char* args, Stream& out) {
     out.println("OK");
 }
 
+// AT+COUNTERS?  — earnings totals, i.e. exactly what BLE Live Counters (6a40f003)
+// reports. The bench equivalent of the app's Diagnostics coin-path wizard: note
+// `lifetime`, drop a coin, run it again. If lifetime moved, the coin path and
+// the configured polarity are both correct (APP_BLE_PLAN H1/A3).
+static void cmd_counters(const char* args, Stream& out) {
+    (void)args;
+    counters_print(out);
+    out.println("OK");
+}
+
 // AT+RTC?                          — clock status, both chip and system
 // AT+RTC=<epoch>                   — set from epoch seconds UTC (what BLE sends)
 // AT+RTC=YYYY-MM-DD HH:MM:SS       — set from a human-typed UTC datetime
@@ -718,6 +729,7 @@ static const CliCommand kCommands[] = {
     { "AT+WDT?",         "External TPL5010 watchdog status + liveness ages",     cmd_wdt         },
     { "AT+STRAP?",       "JP10 role strap position + last reset reason",         cmd_strap       },
     { "AT+LCD?",         "LCD health, I2C address, recovery count",              cmd_lcd_status  },
+    { "AT+COUNTERS?",     "Earnings totals (same data as BLE Live Counters 6a40f003)", cmd_counters },
     { "AT+RTC",          "Clock: AT+RTC? or AT+RTC=<epoch> or AT+RTC=YYYY-MM-DD HH:MM:SS (UTC)", cmd_rtc },
     // AT+SERIAL_ERASE must precede AT+SERIAL — see the ORDERING note above.
     { "AT+SERIAL_ERASE", "Clear the serial for re-provisioning: AT+SERIAL_ERASE=<token> (AT+SERIAL_ERASE? shows it)", cmd_serial_erase },

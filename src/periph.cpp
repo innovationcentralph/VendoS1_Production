@@ -1,4 +1,5 @@
 #include "periph.h"
+#include "counters.h"
 #include "debug_log.h"
 #include "wdt.h"
 
@@ -259,7 +260,21 @@ void coin_counter_task_run(void* arg) {
                         ++s_coin_count;
                         s_coin_value_cents += s_price_per_credit_cents;
                         const uint32_t total = s_coin_count;
+                        const uint32_t billed = s_price_per_credit_cents;
                         xSemaphoreGive(s_coin_mutex);
+
+                        // ESP32-only: operator earnings totals for the BLE Live
+                        // Counters characteristic. No STM32 counterpart — see
+                        // docs/PORTING_FROM_STM32.md 2.5a.
+                        //
+                        // Deliberately HERE, at acceptance, and not at session
+                        // end: the app's Diagnostics coin-path wizard proves a
+                        // coin was seen by watching lifetimeAmount move, so a
+                        // per-session increment would report a dead coin path on
+                        // a working board. Called outside the coin mutex --
+                        // counters keeps its own, and nesting the two would
+                        // invent a lock-ordering rule for no reason.
+                        counters_record_coin(billed);
                         DBG("[coin] pulse detected, credits=");
                         DBGLN(total);
                         state = COIN_ACTIVE_WAIT;

@@ -5,6 +5,7 @@
 #include "config.h"
 #include "identity.h"
 #include "rtc.h"
+#include "counters.h"
 #include "display.h"
 #include "wdt.h"
 #include "version.h"
@@ -13,6 +14,7 @@
 #endif
 #ifdef ENABLE_BLE
 #include "ble_config.h"
+#include "ble_livecounters.h"
 #endif
 
 // =============================================================================
@@ -148,6 +150,10 @@ void setup() {
     ble_config_init();
 #endif
 
+    // Earnings counters. After rtc_init() so the business day can be settled
+    // from a valid clock, and before the coin task, which records into them.
+    counters_init();
+
     // Coin counter mutex must be created before any task that reads the counter.
     coin_counter_init();
 
@@ -206,6 +212,10 @@ void loop() {
     // the ENABLE_CLI guard below — a production build drops the CLI but must
     // keep the clock fresh. Costs a millis() compare per 10 ms tick.
     rtc_service();
+    counters_service();
+#ifdef ENABLE_BLE
+    ble_livecounters_service();   // notify subscribers when the counters move
+#endif
 
 #ifdef ENABLE_CLI
     while (Serial.available() > 0) {
