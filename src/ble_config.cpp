@@ -1,6 +1,7 @@
 #include "ble_config.h"
 #include "config.h"
 #include "identity.h"
+#include "ble_timesync.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -273,6 +274,11 @@ void ble_config_init() {
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
     s_configChar->setCallbacks(new ConfigCharCallbacks());
     republish_stored_cfg();  // seed a real value before the first connection
+
+    // Other characteristics on the same service register themselves here,
+    // before start(). Each lives in its own file — see src/ble_timesync.h for
+    // why, and for the constraint that f001 Device Info must not ship alone.
+    ble_timesync_register(service);
 
     service->start();
 
