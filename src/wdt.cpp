@@ -123,6 +123,20 @@ static const char* reset_reason_name(esp_reset_reason_t r) {
     }
 }
 
+bool wdt_boot_was_watchdog() {
+    switch (s_resetReason) {
+        case ESP_RST_EXT:        // TPL5010 *or* SW1 — indistinguishable, see wdt.h
+        case ESP_RST_WDT:        // unambiguous: an on-chip watchdog fired
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_INT_WDT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+esp_reset_reason_t wdt_boot_reason() { return s_resetReason; }
+
 void wdt_print_boot_report(Stream& out) {
     out.print("reset reason: ");
     out.println(reset_reason_name(s_resetReason));

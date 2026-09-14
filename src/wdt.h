@@ -1,4 +1,6 @@
 #pragma once
+
+#include <esp_system.h>
 #include <Arduino.h>
 
 // =============================================================================
@@ -113,6 +115,24 @@ uint32_t watchdog_liveness_stale_ms();
 // ESP_RST_EXT, since nRST and the reset button share the ESP_EN net), and
 // telling either of those apart from a panic or a brownout is the first
 // question any field fault raises.
+// True if the last reset looks like the watchdog fired. Feeds diagnostics
+// error 0x05 (docs/BLE_CONFIG_CONTRACT.md).
+//
+// ⚠️ ESP_RST_EXT is AMBIGUOUS on this board and is counted as a watchdog reset
+// anyway. The TPL5010's nRST and SW1 both pull the shared ESP_EN net, and the
+// ESP32 cannot tell them apart. Pressing RESET on the bench therefore raises
+// 0x05. That is the right trade for a field unit — SW1 is inside a locked
+// cabinet, so in the field an EN reset really is the watchdog — but it means
+// the flag is noise during bench work.
+//
+// Panic and brownout resets are deliberately NOT reported here: they are
+// every bit as important, but the app's error table has no code for them and
+// inventing one risks colliding with a future allocation. See wdt_boot_reason().
+bool wdt_boot_was_watchdog();
+
+// Raw reset reason, for anything that needs more detail than the flag above.
+esp_reset_reason_t wdt_boot_reason();
+
 void wdt_print_boot_report(Stream& out);
 
 void wdt_print_status(Stream& out);

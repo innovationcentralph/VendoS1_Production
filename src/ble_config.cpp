@@ -4,6 +4,7 @@
 #include "ble_timesync.h"
 #include "ble_livecounters.h"
 #include "ble_deviceinfo.h"
+#include "ble_diagnostics.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -283,6 +284,7 @@ void ble_config_init() {
     ble_deviceinfo_register(service);   // no-op unless ENABLE_BLE_DEVICE_INFO
     ble_timesync_register(service);
     ble_livecounters_register(service);
+    ble_diagnostics_register(service);
 
     service->start();
 

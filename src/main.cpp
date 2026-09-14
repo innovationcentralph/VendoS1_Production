@@ -6,6 +6,7 @@
 #include "identity.h"
 #include "rtc.h"
 #include "counters.h"
+#include "diag.h"
 #include "display.h"
 #include "wdt.h"
 #include "version.h"
@@ -15,6 +16,7 @@
 #ifdef ENABLE_BLE
 #include "ble_config.h"
 #include "ble_livecounters.h"
+#include "ble_diagnostics.h"
 #endif
 
 // =============================================================================
@@ -154,6 +156,10 @@ void setup() {
     // from a valid clock, and before the coin task, which records into them.
     counters_init();
 
+    // Fault mailbox. After rtc_init() and wdt_begin(): it latches the reset
+    // reason (error 0x05) and the clock's validity (0x03) at this moment.
+    diag_init();
+
     // Coin counter mutex must be created before any task that reads the counter.
     coin_counter_init();
 
@@ -213,8 +219,10 @@ void loop() {
     // keep the clock fresh. Costs a millis() compare per 10 ms tick.
     rtc_service();
     counters_service();
+    diag_service();
 #ifdef ENABLE_BLE
     ble_livecounters_service();   // notify subscribers when the counters move
+    ble_diagnostics_service();    // and when a fault is raised or cleared
 #endif
 
 #ifdef ENABLE_CLI

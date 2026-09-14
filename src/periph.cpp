@@ -1,5 +1,6 @@
 #include "periph.h"
 #include "counters.h"
+#include "diag.h"
 #include "debug_log.h"
 #include "wdt.h"
 
@@ -239,8 +240,14 @@ void coin_counter_task_run(void* arg) {
     // Identical to the STM32 version except that "active" is resolved against
     // the configured polarity instead of being hard-coded to HIGH.
     enum CoinState { COIN_IDLE, COIN_DEBOUNCE, COIN_ACTIVE_WAIT };
-    CoinState state      = COIN_IDLE;
-    uint8_t   db_samples = 0;
+    CoinState state       = COIN_IDLE;
+    uint8_t   db_samples  = 0;
+    uint16_t  stuck_ticks = 0;
+
+    // 5 ms per poll, so 400 ticks is 2 s of continuous assertion. Generously
+    // beyond any real coin pulse, and short enough that a technician sees the
+    // fault while still standing at the machine.
+    static const uint16_t COIN_STUCK_TICKS = 400;
     const uint8_t DB_THRESHOLD = 3;
 
     Serial.println("[coin] counter task running");
@@ -286,7 +293,26 @@ void coin_counter_task_run(void* arg) {
                 break;
 
             case COIN_ACTIVE_WAIT:
-                if (!active) { state = COIN_IDLE; }
+                if (!active) {
+                    stuck_ticks = 0;
+                    state = COIN_IDLE;
+                } else if (stuck_ticks < COIN_STUCK_TICKS) {
+                    // ESP32-only: stuck-line detection for BLE diagnostics
+                    // error 0x01. No STM32 counterpart — see
+                    // docs/PORTING_FROM_STM32.md 2.5a.
+                    //
+                    // A real acceptor pulse is tens of milliseconds. A line
+                    // held asserted for seconds is not a coin: it is a shorted
+                    // harness, a failed opto, or — the case worth catching —
+                    // the WRONG POLARITY, which parks the input "active"
+                    // forever. That last one otherwise presents as a machine
+                    // that counted one phantom credit at power-on and then
+                    // never counts again, with nothing to explain it.
+                    if (++stuck_ticks >= COIN_STUCK_TICKS) {
+                        diag_raise(DIAG_ERR_COIN_LINE);
+                        DBGLN("[coin] line stuck asserted - raised diag 0x01");
+                    }
+                }
                 break;
         }
 

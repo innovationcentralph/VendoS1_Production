@@ -3,6 +3,7 @@
 #include "identity.h"
 #include "rtc.h"
 #include "counters.h"
+#include "diag.h"
 #include "periph.h"
 #include "display.h"
 #include "wdt.h"
@@ -522,6 +523,34 @@ static void cmd_counters(const char* args, Stream& out) {
     out.println("OK");
 }
 
+// AT+DIAG?       — the fault mailbox and live sensor bits, i.e. exactly what
+//                  BLE Diagnostics (6a40f006) reports.
+// AT+DIAG_CLEAR  — empty the fault list.
+//
+// Clearing normally comes from the app via the Command characteristic's
+// clear_errors op, once it has uploaded the faults to the backend. f007 is not
+// built yet, so this is currently the only way to empty the list — and on the
+// bench it is genuinely useful, because pressing RESET raises 0x05 every time
+// (SW1 and the TPL5010 share ESP_EN and cannot be told apart).
+static void cmd_diag(const char* args, Stream& out) {
+    if (args[0] == '?' || args[0] == ' ') {
+        diag_print(out);
+        out.println("OK");
+        return;
+    }
+    out.println("ERROR: usage  AT+DIAG?  (or AT+DIAG_CLEAR to empty the fault list)");
+}
+
+static void cmd_diag_clear(const char* args, Stream& out) {
+    (void)args;
+    diag_clear_all();
+    out.println("fault list cleared");
+    out.println("NOTE: 0x03 (RTC unset) re-raises immediately if the clock is still");
+    out.println("      unset — it is a present condition, not a historical event.");
+    diag_print(out);
+    out.println("OK");
+}
+
 // AT+RTC?                          — clock status, both chip and system
 // AT+RTC=<epoch>                   — set from epoch seconds UTC (what BLE sends)
 // AT+RTC=YYYY-MM-DD HH:MM:SS       — set from a human-typed UTC datetime
@@ -729,6 +758,9 @@ static const CliCommand kCommands[] = {
     { "AT+WDT?",         "External TPL5010 watchdog status + liveness ages",     cmd_wdt         },
     { "AT+STRAP?",       "JP10 role strap position + last reset reason",         cmd_strap       },
     { "AT+LCD?",         "LCD health, I2C address, recovery count",              cmd_lcd_status  },
+    // AT+DIAG_CLEAR before AT+DIAG — dispatch() takes the first prefix match.
+    { "AT+DIAG_CLEAR",    "Empty the diagnostics fault list (app normally does this via f007)", cmd_diag_clear },
+    { "AT+DIAG",          "Fault list + live sensor bits (same data as BLE Diagnostics 6a40f006)", cmd_diag },
     { "AT+COUNTERS?",     "Earnings totals (same data as BLE Live Counters 6a40f003)", cmd_counters },
     { "AT+RTC",          "Clock: AT+RTC? or AT+RTC=<epoch> or AT+RTC=YYYY-MM-DD HH:MM:SS (UTC)", cmd_rtc },
     // AT+SERIAL_ERASE must precede AT+SERIAL — see the ORDERING note above.

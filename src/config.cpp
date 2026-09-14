@@ -1,5 +1,6 @@
 #include "config.h"
 #include <Preferences.h>
+#include "diag.h"
 #include <Arduino.h>
 
 // =============================================================================
@@ -94,6 +95,9 @@ void config_save(const AppConfig* cfg) {
     Preferences prefs;
     if (!prefs.begin(APP_CONFIG_NS, /*readOnly=*/false)) {
         Serial.println("[cfg] ERROR: NVS open failed — config NOT saved");
+        // ESP32-only: surface it to the app. Serial goes nowhere in a deployed
+        // machine, and the operator's symptom is "the price I set reverted".
+        diag_raise(DIAG_ERR_NVS_WRITE);
         return;
     }
     const size_t n = prefs.putBytes(APP_CONFIG_KEY, &to_save, sizeof(to_save));
@@ -108,6 +112,7 @@ void config_save(const AppConfig* cfg) {
         Serial.print((unsigned)n); Serial.print('/');
         Serial.print((unsigned)sizeof(to_save));
         Serial.println(" bytes) — config NOT saved");
+        diag_raise(DIAG_ERR_NVS_WRITE);   // ESP32-only, as above
     }
 }
 

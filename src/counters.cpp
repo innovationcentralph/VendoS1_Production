@@ -1,6 +1,7 @@
 #include "counters.h"
 #include "rtc.h"
 #include <Preferences.h>
+#include "diag.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <string.h>
@@ -76,9 +77,21 @@ static void counters_load_locked() {
 
 static void counters_save_locked() {
     Preferences prefs;
-    if (!prefs.begin(COUNTERS_NS, /*readOnly=*/false)) return;
-    prefs.putBytes(COUNTERS_KEY, &s_c, sizeof(s_c));
+    if (!prefs.begin(COUNTERS_NS, /*readOnly=*/false)) {
+        diag_raise(DIAG_ERR_NVS_WRITE);
+        return;                       // stay dirty; retry on the next service tick
+    }
+    const size_t n = prefs.putBytes(COUNTERS_KEY, &s_c, sizeof(s_c));
     prefs.end();
+
+    // The result was previously discarded. A silently failing flush is the
+    // nastiest of the NVS failures: the board keeps counting correctly in RAM
+    // and loses it at every reboot, so lifetime takings appear to go BACKWARDS
+    // — and that figure is the operator's meter reading against cash in the box.
+    if (n != sizeof(s_c)) {
+        diag_raise(DIAG_ERR_NVS_WRITE);
+        return;                       // leave s_unsaved set so we try again
+    }
     s_unsaved = false;
 }
 

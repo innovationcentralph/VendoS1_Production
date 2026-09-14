@@ -1,5 +1,6 @@
 #include "identity.h"
 #include <Preferences.h>
+#include "diag.h"
 #include <esp_system.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -90,16 +91,18 @@ IdentitySetResult identity_serial_set(const char* s) {
     canonical[IDENTITY_SERIAL_LEN] = '\0';
 
     Preferences prefs;
-    if (!prefs.begin(IDENTITY_NS, /*readOnly=*/false)) return IDENTITY_SET_NVS_FAIL;
+    if (!prefs.begin(IDENTITY_NS, /*readOnly=*/false)) { diag_raise(DIAG_ERR_NVS_WRITE); return IDENTITY_SET_NVS_FAIL; }
     const size_t n = prefs.putString(IDENTITY_KEY, canonical);
     prefs.end();
 
-    if (n == 0) return IDENTITY_SET_NVS_FAIL;
+    if (n == 0) { diag_raise(DIAG_ERR_NVS_WRITE); return IDENTITY_SET_NVS_FAIL; }
 
     // Read back rather than trusting the write. This is the one value on the
     // board that cannot be corrected in the field without the erase token, so
     // it is worth the extra NVS read to fail loudly at the factory instead.
-    return identity_serial_valid() ? IDENTITY_SET_OK : IDENTITY_SET_NVS_FAIL;
+    if (identity_serial_valid()) return IDENTITY_SET_OK;
+    diag_raise(DIAG_ERR_NVS_WRITE);   // wrote, but it did not read back
+    return IDENTITY_SET_NVS_FAIL;
 }
 
 bool identity_serial_erase(const char* token) {
