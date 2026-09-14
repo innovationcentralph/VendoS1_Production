@@ -686,10 +686,14 @@ void app_task_run(void* arg) {
         // ----------------------------------------------------------------
         case APP_STATE_SESSION_END:
             relay_off();
-            // ESP32-only: one completed vend, for BLE Live Counters'
-            // today_sessions. No STM32 counterpart — docs/PORTING_FROM_STM32.md
-            // 2.5a. Counted at END rather than start so the figure means
-            // "vends delivered", which is what an operator reconciles against.
+            // ESP32-only: one completed vend for BLE Live Counters'
+            // today_sessions. No STM32 counterpart — see
+            // docs/PORTING_FROM_STM32.md 2.5a.
+            //
+            // HERE, and not on each relay_on()/relay_off(): in OP_PAUSE_RESUME
+            // the relay toggles repeatedly inside a single paid period, so
+            // counting edges would report one customer as several sessions.
+            // This state is reached exactly once per paid period.
             counters_record_session();
             if (cfg.gsm_reporting_enabled) {
                 // TODO: gsm_report_send()  (stub on the STM32 too)

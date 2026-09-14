@@ -8,10 +8,76 @@
 //
 // Four values, matching the app's decodeLiveCounters() byte-for-byte:
 //
-//     today_amount    u32  centavos taken since the business day began
-//     today_sessions  u16  completed vends since the business day began
-//     lifetime_amount u32  centavos taken, ever
+//     today_amount    u32  PESOS taken since the business day began
+//     today_sessions  u16  VENDS delivered since the business day began
+//     lifetime_amount u32  PESOS taken, ever
 //     last_seq        u32  highest event-log sequence number (B3; 0 until then)
+//
+// ---------------------------------------------------------------------------
+// THE WIRE IS PESOS. INTERNALLY THIS MODULE IS CENTAVOS.
+// ---------------------------------------------------------------------------
+//
+// Firmware money is centavos everywhere else — `price_per_credit_cents` is the
+// Config contract's own field name, and 1000 there means P10.00. But the app
+// renders these two figures with NO division by 100 (`formatCurrency` is just
+// `P${amount}`), and the reference firmware the app was built against
+// accumulates whole pesos (`lifetimeAmount += denom`, denom = 5 for a P5 coin).
+//
+// So the conversion happens at the wire boundary, in counters_serialize(), and
+// nowhere else. Get this wrong in the other direction and every machine reports
+// earning 100x its real take.
+//
+// It is exact, not lossy: price-per-pulse is always a whole number of pesos, so
+// every accumulated total is a whole multiple of 100 centavos. The accessors
+// below stay in centavos so the CLI can print exact pesos-and-centavos.
+//
+// (Worth raising with the app team: the contract is internally inconsistent —
+// Config carries centavos, Live Counters and Session Log carry pesos.)
+//
+// ---------------------------------------------------------------------------
+// A SESSION IS ONE PAID PERIOD — A VEND. THIS DIVERGES FROM THE REFERENCE.
+// ---------------------------------------------------------------------------
+//
+// A session is what a customer bought: money in, relay engages, machine runs,
+// period ends. Counted once at APP_STATE_SESSION_END.
+//
+// **The deciding argument is non-redundancy.** today_amount already carries the
+// money, and credits are just money / coins_required — so counting credits here
+// would make this field a near-duplicate of one the app already has. Paid
+// periods report something nothing else does: how many customers the machine
+// served. Two fields, two questions.
+//
+// (Credits were the serious alternative, and they have one attractive property:
+// today_amount / today_sessions would always equal coins_required exactly, a
+// free misconfiguration check. Rejected anyway, for the redundancy above.)
+//
+// **Not** the number of relay transitions. In OP_PAUSE_RESUME the relay toggles
+// several times inside one paid period, so counting GPIO edges would report one
+// customer as three or four sessions. SESSION_END fires once per paid period
+// however many times the relay cycled within it.
+//
+// **Not** the pulse count either — and that IS what the app's reference
+// firmware does (`todaySessions++` inside addEvent(), the per-coin path).
+// Deliberate divergence, on the product owner's call, because that reference is
+// a demo rig where every simulated coin is P5, produces one event, and drives
+// one vend: pulse == coin == vend, so the three meanings collapse and it never
+// had to choose. On a real S1 they diverge violently — a P10 coin at P1/pulse
+// is 10 pulses, 1 coin, 1 vend.
+//
+// Reporting pulses here would put "Sessions today: 10" on the operator's screen
+// for one customer. The label would be a lie and the number useless.
+//
+// Two things make this divergence safe rather than merely defensible:
+//
+//   * The app's Diagnostics coin-path test keys off `lifetimeAmount !== baseline
+//     || todaySessions !== baseline`. lifetime still moves on every pulse, so
+//     the coin test still fires — it does not depend on this field.
+//   * The Analytics per-denomination breakdown is built from SESSION LOG events
+//     (backend `useSessions`), not from this counter. Those stay per-pulse.
+//
+// ⚠️ Consequence to tell the app team: the backend's event count and this
+// counter now mean different things — events are pulses, today_sessions is
+// vends. Nothing currently compares them, but nothing stops someone trying.
 //
 // ---------------------------------------------------------------------------
 // THE BUSINESS DAY IS ASIA/MANILA, NOT UTC. THIS IS NOT A PREFERENCE.
@@ -84,11 +150,13 @@
 // the day can be established from a valid clock on the first try.
 void counters_init();
 
-// One accepted coin, worth `cents`. Called from the coin task at acceptance —
-// see the lifetime note above. Safe from any task.
+// One accepted pulse, worth `cents`. Called from the coin task at acceptance —
+// see the lifetime note above. Moves the money totals only; the session count
+// is a separate event. Safe from any task.
 void counters_record_coin(uint32_t cents);
 
-// One completed vend. Called from APP_STATE_SESSION_END.
+// One completed vend — one paid period. Called from APP_STATE_SESSION_END.
+// See the session definition above before moving this call site.
 void counters_record_session();
 
 // Serialises the 14-byte Live Counters frame (little-endian) exactly as

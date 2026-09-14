@@ -138,6 +138,7 @@ void counters_record_session() {
     Lock lock;
     if (!lock.held) return;
     counters_roll_day_locked();
+    // One paid period, not one relay edge and not one pulse — see counters.h.
     if (s_c.today_sessions < UINT16_MAX) ++s_c.today_sessions;
     s_dirty          = true;
     s_unsaved        = true;
@@ -172,9 +173,12 @@ void counters_serialize(uint8_t out[COUNTERS_WIRE_LEN]) {
     // Offsets are fixed by the app's decodeLiveCounters(); note today_sessions
     // is a u16 at 4, which leaves lifetime_amount on an ODD offset (6). That is
     // the contract, not an oversight — do not pad it.
-    put_u32(out, 0,  s_c.today_amount);
+    //
+    // /100 is THE centavos->pesos boundary (see counters.h). Exact, because
+    // price-per-pulse is always whole pesos.
+    put_u32(out, 0,  s_c.today_amount / 100u);
     put_u16(out, 4,  s_c.today_sessions);
-    put_u32(out, 6,  s_c.lifetime_amount);
+    put_u32(out, 6,  s_c.lifetime_amount / 100u);
     put_u32(out, 10, s_c.last_seq);
 }
 
@@ -226,7 +230,8 @@ void counters_print(Stream& out) {
     if (frac < 10) out.print('0');
     out.println(frac);
 
-    out.print("sessions = "); out.println(counters_today_sessions());
+    out.print("sessions = "); out.print(counters_today_sessions());
+    out.println("   (completed vends today, not pulses)");
 
     out.print("lifetime = P");
     out.print(counters_lifetime_amount() / 100); out.print('.');
@@ -235,6 +240,9 @@ void counters_print(Stream& out) {
     out.println(lfrac);
 
     out.print("last_seq = "); out.println(counters_last_seq());
+    out.print("on the wire: today="); out.print(counters_today_amount() / 100u);
+    out.print(" lifetime="); out.print(counters_lifetime_amount() / 100u);
+    out.println("   (PESOS — the app does not divide by 100)");
 
     out.print("day key  = ");
     if (s_c.today_day == COUNTERS_DAY_UNKNOWN) {
