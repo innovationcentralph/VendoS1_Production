@@ -3,6 +3,7 @@
 #include "identity.h"
 #include "rtc.h"
 #include "counters.h"
+#include "eventlog.h"
 #include "diag.h"
 #include "periph.h"
 #include "display.h"
@@ -523,6 +524,37 @@ static void cmd_counters(const char* args, Stream& out) {
     out.println("OK");
 }
 
+// AT+LOG?        — event log health: depth, seq range, wraps, drops
+// AT+LOG=<n>     — dump the n oldest retained events
+// AT+LOG=<n>,<after_seq> — dump n events after a given seq, i.e. exactly what a
+//                  BLE Session Log page would carry for that cursor
+//
+// The bench counterpart of the app's delta sync: `AT+LOG=10,0` is the first page
+// the app would pull on a machine it has never synced, in the same order and
+// with the same PESO amounts (the wire carries pesos, not centavos — D15).
+static void cmd_log(const char* args, Stream& out) {
+    if (args[0] == '?' || args[0] == ' ' || args[0] == '\0') {
+        eventlog_print(out);
+        out.println("OK");
+        return;
+    }
+    if (args[0] == '=') {
+        const char* p = args + 1;
+        const long n = strtol(p, nullptr, 10);
+        if (n <= 0 || n > 1000) {
+            out.println("ERROR: usage  AT+LOG=<rows>[,<after_seq>]   (rows 1..1000)");
+            return;
+        }
+        uint32_t after = 0;
+        const char* comma = strchr(p, ',');
+        if (comma != nullptr) after = (uint32_t)strtoul(comma + 1, nullptr, 10);
+        eventlog_dump(out, after, (uint32_t)n);
+        out.println("OK");
+        return;
+    }
+    out.println("ERROR: usage  AT+LOG?  or  AT+LOG=<rows>[,<after_seq>]");
+}
+
 // AT+DIAG?       — the fault mailbox and live sensor bits, i.e. exactly what
 //                  BLE Diagnostics (6a40f006) reports.
 // AT+DIAG_CLEAR  — empty the fault list.
@@ -533,7 +565,7 @@ static void cmd_counters(const char* args, Stream& out) {
 // bench it is genuinely useful, because pressing RESET raises 0x05 every time
 // (SW1 and the TPL5010 share ESP_EN and cannot be told apart).
 static void cmd_diag(const char* args, Stream& out) {
-    if (args[0] == '?' || args[0] == ' ') {
+    if (args[0] == '?' || args[0] == '\0') {
         diag_print(out);
         out.println("OK");
         return;
@@ -762,6 +794,7 @@ static const CliCommand kCommands[] = {
     { "AT+DIAG_CLEAR",    "Empty the diagnostics fault list (app normally does this via f007)", cmd_diag_clear },
     { "AT+DIAG",          "Fault list + live sensor bits (same data as BLE Diagnostics 6a40f006)", cmd_diag },
     { "AT+COUNTERS?",     "Earnings totals (same data as BLE Live Counters 6a40f003)", cmd_counters },
+    { "AT+LOG",           "Event log: AT+LOG? or AT+LOG=<rows>[,<after_seq>] (same data as BLE Session Log 6a40f004)", cmd_log },
     { "AT+RTC",          "Clock: AT+RTC? or AT+RTC=<epoch> or AT+RTC=YYYY-MM-DD HH:MM:SS (UTC)", cmd_rtc },
     // AT+SERIAL_ERASE must precede AT+SERIAL — see the ORDERING note above.
     { "AT+SERIAL_ERASE", "Clear the serial for re-provisioning: AT+SERIAL_ERASE=<token> (AT+SERIAL_ERASE? shows it)", cmd_serial_erase },

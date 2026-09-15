@@ -67,17 +67,17 @@
 // Reporting pulses here would put "Sessions today: 10" on the operator's screen
 // for one customer. The label would be a lie and the number useless.
 //
-// Two things make this divergence safe rather than merely defensible:
+// The app's Diagnostics coin-path test keys off `lifetimeAmount !== baseline ||
+// todaySessions !== baseline`, and lifetime still moves on every pulse, so that
+// test does not depend on this field.
 //
-//   * The app's Diagnostics coin-path test keys off `lifetimeAmount !== baseline
-//     || todaySessions !== baseline`. lifetime still moves on every pulse, so
-//     the coin test still fires — it does not depend on this field.
-//   * The Analytics per-denomination breakdown is built from SESSION LOG events
-//     (backend `useSessions`), not from this counter. Those stay per-pulse.
-//
-// ⚠️ Consequence to tell the app team: the backend's event count and this
-// counter now mean different things — events are pulses, today_sessions is
-// vends. Nothing currently compares them, but nothing stops someone trying.
+// ⚠️ UPDATED 2026-09-15: the event log now records ONE ROW PER SESSION as well
+// (user's decision — see src/eventlog.h), so this counter and the number of
+// rows in the Session Log finally agree on what a session is. The earlier
+// warning here — that the two meant different things — no longer applies. What
+// DOES follow from that change: the app's per-denomination Analytics breakdown
+// is built from Session Log rows, and those rows no longer carry a coin
+// denomination. See D18 in docs/APP_BLE_PLAN.md.
 //
 // ---------------------------------------------------------------------------
 // THE BUSINESS DAY IS ASIA/MANILA, NOT UTC. THIS IS NOT A PREFERENCE.

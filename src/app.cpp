@@ -1,5 +1,6 @@
 #include "app.h"
 #include "counters.h"
+#include "eventlog.h"
 #include "config.h"
 #include "session.h"
 #include "periph.h"
@@ -695,6 +696,12 @@ void app_task_run(void* arg) {
             // counting edges would report one customer as several sessions.
             // This state is reached exactly once per paid period.
             counters_record_session();
+            // ...and the same paid period as ONE row in the BLE Session Log
+            // (6a40f004), carrying the total billed for it and stamped when its
+            // first credit was billed. Same state for the same reason; the two
+            // now agree on what a session is. Queues only — the flash write
+            // happens in loop(). See src/eventlog.h.
+            eventlog_record_session();
             if (cfg.gsm_reporting_enabled) {
                 // TODO: gsm_report_send()  (stub on the STM32 too)
             }

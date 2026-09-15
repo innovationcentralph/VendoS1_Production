@@ -1,5 +1,6 @@
 #include "periph.h"
 #include "counters.h"
+#include "eventlog.h"
 #include "diag.h"
 #include "debug_log.h"
 #include "wdt.h"
@@ -338,6 +339,22 @@ void coin_consume_value_cents(uint32_t cents) {
     xSemaphoreTake(s_coin_mutex, portMAX_DELAY);
     s_coin_value_cents = (s_coin_value_cents > cents) ? (s_coin_value_cents - cents) : 0;
     xSemaphoreGive(s_coin_mutex);
+
+    // ESP32-only: the BLE Session Log (6a40f004) records one row per PAID
+    // PERIOD, and this is the single point every billing path passes through —
+    // the initial credit block in APP_STATE_COIN_VALIDATE, the per-credit gated
+    // top-ups, and session.cpp's accumulation. Hooking it here rather than at
+    // those three call sites is what keeps app.cpp and session.cpp diffable
+    // against the STM32. No STM32 counterpart — see
+    // docs/PORTING_FROM_STM32.md 2.5a.
+    //
+    // Accumulates only; the row is queued at SESSION_END and written to flash
+    // by loop(). Nothing here touches flash — see src/eventlog.h.
+    //
+    // Deliberately OUTSIDE the coin mutex, like counters_record_coin() above:
+    // eventlog keeps its own state and nesting the two would invent a
+    // lock-ordering rule for no reason.
+    eventlog_note_billed(cents);
 }
 
 void coin_reset() {

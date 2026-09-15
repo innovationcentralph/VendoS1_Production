@@ -5,6 +5,7 @@
 #include "ble_livecounters.h"
 #include "ble_deviceinfo.h"
 #include "ble_diagnostics.h"
+#include "ble_sessionlog.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -266,10 +267,26 @@ class ConfigCharCallbacks : public NimBLECharacteristicCallbacks {
     }
 };
 
+// Server-level callbacks. The only thing this firmware needs from them is the
+// disconnect edge: Session Log keeps a pagination cursor per connection, and a
+// connection handle is reused by the stack, so a slot that outlived its
+// connection would hand the next client someone else's position in the log.
+//
+// Advertising still restarts on its own — NimBLEServer does that from
+// m_advertiseOnDisconnect regardless of whether callbacks are installed — so
+// this does not change the connect behaviour that already works.
+class ServerCallbacks : public NimBLEServerCallbacks {
+    void onDisconnect(NimBLEServer* s, ble_gap_conn_desc* desc) override {
+        (void)s;
+        ble_sessionlog_on_disconnect(desc->conn_handle);
+    }
+};
+
 void ble_config_init() {
     build_device_name();
     NimBLEDevice::init(s_device_name);
     NimBLEServer* server = NimBLEDevice::createServer();
+    server->setCallbacks(new ServerCallbacks());
     NimBLEService* service = server->createService(BLE_SERVICE_UUID);
 
     s_configChar = service->createCharacteristic(
@@ -284,6 +301,7 @@ void ble_config_init() {
     ble_deviceinfo_register(service);   // no-op unless ENABLE_BLE_DEVICE_INFO
     ble_timesync_register(service);
     ble_livecounters_register(service);
+    ble_sessionlog_register(service);
     ble_diagnostics_register(service);
 
     service->start();

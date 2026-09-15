@@ -6,6 +6,7 @@
 #include "identity.h"
 #include "rtc.h"
 #include "counters.h"
+#include "eventlog.h"
 #include "diag.h"
 #include "display.h"
 #include "wdt.h"
@@ -143,6 +144,20 @@ void setup() {
     // Show exactly what is stored before the app task may rewrite it.
     config_dump_eeprom(Serial);
 
+    // Earnings counters. After rtc_init() so the business day can be settled
+    // from a valid clock, and before the coin task, which records into them.
+    //
+    // Also before eventlog_init() and BLE: counters owns last_seq, which is the
+    // floor that stops an erased event log from rewinding sequence numbers into
+    // ids the backend has already filed (src/eventlog.h).
+    counters_init();
+
+    // Event log — the store behind BLE Session Log (6a40f004). Scans the
+    // `vendolog` flash partition to recover {oldest, newest, head}. Must come
+    // before ble_config_init(), which registers the characteristic that serves
+    // it, and before the coin task, which records into it.
+    eventlog_init();
+
 #ifdef ENABLE_BLE
     // BLE runs entirely on the Bluedroid stack's own tasks (pinned to core 0
     // by the framework), not on anything created here — see the task-layout
@@ -151,10 +166,6 @@ void setup() {
     // own API, the same as the CLI does.
     ble_config_init();
 #endif
-
-    // Earnings counters. After rtc_init() so the business day can be settled
-    // from a valid clock, and before the coin task, which records into them.
-    counters_init();
 
     // Fault mailbox. After rtc_init() and wdt_begin(): it latches the reset
     // reason (error 0x05) and the clock's validity (0x03) at this moment.
@@ -219,6 +230,10 @@ void loop() {
     // keep the clock fresh. Costs a millis() compare per 10 ms tick.
     rtc_service();
     counters_service();
+    // Drains the coin task's event queue to the `vendolog` partition. Here, not
+    // in the coin task: a sector erase inside that 5 ms poll would miss pulses
+    // (src/eventlog.h). Costs nothing when the queue is empty.
+    eventlog_service();
     diag_service();
 #ifdef ENABLE_BLE
     ble_livecounters_service();   // notify subscribers when the counters move

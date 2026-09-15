@@ -1,0 +1,34 @@
+# Vendo S1 partition table — the stock arduino-esp32 `default.csv` with the
+# Session Log's storage carved out of the (unused) SPIFFS region.
+#
+# WHY THIS FILE EXISTS
+#
+# The event log behind BLE Session Log (6a40f004) needs somewhere to live that
+# is NOT the `nvs` partition. `nvs` is 0x5000 — 20 KB, four usable 4 KB pages
+# once NVS reserves one for compaction — and it already carries the config blob
+# (`vendo`), the factory serial (`vendoid`), the earnings totals (`vendocnt`)
+# and NimBLE's bonding records. A log deep enough to survive a week between
+# operator visits is ~100 KB. It does not fit, and rewriting a multi-KB blob on
+# every coin would burn the same partition that holds the board's identity.
+#
+# THE ONE RULE WHEN EDITING THIS FILE
+#
+# NOTHING BELOW 0x290000 MAY MOVE. `nvs` at 0x9000 holds the write-once factory
+# serial; shifting it orphans every provisioned board. app0/app1 offsets are
+# baked into the bootloader's OTA data and into every binary already flashed.
+# The 128 KB for `vendolog` therefore comes out of `spiffs` (0x160000 ->
+# 0x140000), which no code in this firmware mounts or reads.
+#
+# vendolog: data/0x40 (the first user-defined data subtype — it is deliberately
+# not `spiffs` or `nvs`, so no framework code will ever try to mount or format
+# it). 0x20000 = 32 sectors of 4096 = 8192 records of 16 bytes. See
+# src/eventlog.h for the record layout and the ring's wrap policy.
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x5000,
+otadata,    data, ota,     0xe000,   0x2000,
+app0,       app,  ota_0,   0x10000,  0x140000,
+app1,       app,  ota_1,   0x150000, 0x140000,
+vendolog,   data, 0x40,    0x290000, 0x20000,
+spiffs,     data, spiffs,  0x2B0000, 0x140000,
+coredump,   data, coredump,0x3F0000, 0x10000,
