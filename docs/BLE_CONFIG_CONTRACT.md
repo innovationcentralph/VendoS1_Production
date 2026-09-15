@@ -203,7 +203,7 @@ These are a private vendor UUID space, not SIG-registered.
 | Session Log | `6a40f004` | Read/Write | ✅ built **and hardware-verified** 2026-09-15 (`src/ble_sessionlog.cpp`) |
 | **Config** | `6a40f005` | Read/Write | ✅ shipping |
 | Diagnostics | `6a40f006` | Read/Notify | ✅ built **and hardware-verified** |
-| Command | `6a40f007` | Write | ❌ **required** — the app's `acknowledgeSync()` has no `.catch()` |
+| Command | `6a40f007` | Write | ✅ built 2026-09-15 (`src/ble_command.cpp`) — all 7 ops |
 | OTA Control | `6a40f008` | Write | ❌ |
 | OTA Data | `6a40f009` | Write | ❌ |
 | OTA Status | `6a40f00a` | Read/Notify | ❌ |
@@ -260,6 +260,18 @@ Taken from `codec.ts`, little-endian, so these need no further negotiation:
   `0x05` watchdog reset since last sync.
 - **Command** (Write, 5 B): `op:u8`, `param:u32`. Ops: `0x01` syncAck, `0x02` clearErrors,
   `0x03` identify, `0x04` testRelay, `0x05` testBuzzer, `0x06` testLed, `0x07` wifiForget.
+  **Implemented 2026-09-15.** Three notes the app should know:
+  - **Physical ops are refused while a session is running** (`identify`, `testRelay`, `testBuzzer`,
+    `testLed`). A relay click mid-vend is a customer complaint. `syncAck`, `clearErrors` and
+    `wifiForget` run at any time — refusing a `syncAck` mid-vend would fail a connect for no reason.
+  - **A refusal is invisible to you.** The characteristic is write-only and the contract gives it no
+    status channel, so the ATT write succeeds either way. If the Diagnostics wizard needs to know, that
+    needs a field from your side — see `D20` in `APP_BLE_PLAN.md`.
+  - **`syncAck` is recorded, never applied.** The board keeps its own `last_seq`; writing the backend's
+    value into it could rewind sequence numbers (a partial sync, a restored backup, a second phone).
+  - **`wifiForget` is accepted and ignored** — there is no WiFi on this board yet.
+  - **`reboot` has no op code.** `0x01`–`0x07` are all taken and firmware will not invent `0x08`; the
+    allocation is yours. It is what `A4` needs.
 
 MTU: the app requests 247 but the contract requires firmware to still work at the default
 23, paging in smaller pages.
@@ -354,7 +366,7 @@ push that works today.** So adding Device Info on its own is not an increment, i
 regression.
 
 **Therefore `f001`, `f002`, `f003`, `f004` and `f006` must land in one release, or none of
-them.** **And so must `f007`** — an earlier revision of this doc said Command was "gated
+them.** **And so must `f007`** (all six built as of 2026-09-15) — an earlier revision of this doc said Command was "gated
 separately in the UI and can wait", which reading `BleConnectionContext.tsx` disproves:
 `acknowledgeSync()` is called unconditionally, with no `.catch()`, two lines after a
 `readWifiStatus()` that does have one. Without `f007` the connect throws **after** the

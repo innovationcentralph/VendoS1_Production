@@ -18,6 +18,7 @@
 #include "ble_config.h"
 #include "ble_livecounters.h"
 #include "ble_diagnostics.h"
+#include "ble_command.h"
 #endif
 
 // =============================================================================
@@ -238,6 +239,11 @@ void loop() {
 #ifdef ENABLE_BLE
     ble_livecounters_service();   // notify subscribers when the counters move
     ble_diagnostics_service();    // and when a fault is raised or cleared
+    // Runs at most one queued Command op (identify, relay/buzzer/LED test,
+    // sync_ack, clear_errors). Here rather than in the BLE callback: the beep
+    // helpers block for hundreds of ms and the relay belongs to the vend path.
+    // See src/ble_command.h.
+    ble_command_service();
 #endif
 
 #ifdef ENABLE_CLI

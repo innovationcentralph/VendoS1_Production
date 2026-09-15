@@ -32,12 +32,16 @@ The structure is deliberately kept parallel so the two codebases stay diffable.
 | `src/app.h/.cpp` | `src/app.h/.cpp` | Near-verbatim; config-menu gestures remapped |
 | `src/display.h/.cpp` | `src/display.h/.cpp` | Same API and same screens; I2C recovery re-expressed |
 | `lib/LiquidCrystal_I2C/` | `src/lcd.h/.cpp` | Replaced with a driver that reports ACK/NAK |
-| `src/cli.h/.cpp` | `src/cli.h/.cpp` | All commands ported + 4 ESP32-only ones |
+| `src/cli.h/.cpp` | `src/cli.h/.cpp` | All commands ported + ESP32-only ones (`AT+WDT?`, `AT+STRAP?`, `AT+LCD?`, `AT+COIN?`, `AT+SERIAL*`, `AT+RTC`, `AT+COUNTERS?`) |
+| — | `src/identity.h/.cpp` | **New** — factory serial, own NVS namespace |
+| — | `src/rtc.h/.cpp` | **New** — SLM1302 RTC + UTC time service |
+| — | `src/counters.h/.cpp` | **New** — earnings totals, own NVS namespace |
+| — | `src/ble_config.*`, `ble_timesync.*`, `ble_livecounters.*`, `ble_deviceinfo.*` | **New** — BLE GATT server and characteristics |
 | `lib/Wire/` (vendored) | — | Dropped; the vendored copy existed for an STM32-specific buffer fix |
 
-## 2. The five changes that are behaviour, not mechanics
+## 2. The six changes that are behaviour, not mechanics
 
-Everything else is a mechanical translation. These five are worth knowing about.
+Everything else is a mechanical translation. These six are worth knowing about.
 
 ### 2.1 Watchdog: internal 25 s IWDG → external ~100 ms TPL5010
 
@@ -128,8 +132,80 @@ The new field is **`coin_active_high`**, and it exists because this is money. Th
 STM32 hard-coded "idle LOW, pulse HIGH"; on the S1 the pulse crosses the PC817
 opto and the schematic does not say which way its output swings. Rather than bake
 a guess into the build, it is a settable field (`AT+COIN_POLARITY`, applied live
-so bench calibration is a fast loop) defaulting to active-LOW. **`PENDING.md`
-item 3 — confirm on hardware before shipping a board.**
+so bench calibration is a fast loop).
+
+**The default changed on 2026-09-14** — it was `false` (idle HIGH, pulse LOW), a
+pure guess; it is now **`true` (idle LOW, pulse HIGH)**, derived from the S1
+schematic's COIN_SLOT sheet. At idle the opto LED is driven through R22/R24 so the
+phototransistor conducts and COIN_IN sits LOW; a coin pulse sinks the acceptor
+output, the LED goes dark, and R25 pulls COIN_IN to +3.3 V. The fail-safe
+direction agrees: an unplugged acceptor floats to +5 V, LED on, COIN_IN LOW —
+i.e. idle, rather than a permanently asserted coin line.
+
+Coins have since been counted on a real board with this default, but it is **not
+yet confirmed with a meter** — `PENDING.md` item 3 stays open.
+
+### 2.5a S1-only additions with no upstream counterpart
+
+**Intended divergence, listed here because the diffability rule says anything not
+enumerated in this section should match the STM32.** None of this is a port; the
+STM32 has nothing to diff it against, and a change on either side does *not*
+belong on both.
+
+| Module | What it is |
+|---|---|
+| `src/ble_config.cpp` | BLE GATT server, gated behind `-DENABLE_BLE`. Owns the service and the 37-byte Config characteristic (`6a40f005`). Other characteristics register themselves into its service. |
+| `src/ble_timesync.cpp` | Time Sync (`6a40f002`), write `epoch_utc:u32`. |
+| `src/ble_livecounters.cpp` | Live Counters (`6a40f003`), read + notify, 14 bytes. |
+| `src/ble_deviceinfo.cpp` | Device Info (`6a40f001`). **Built but OFF by default** — see the warning below. |
+| `src/identity.h/.cpp` | Factory serial `VLABS-S1-NNNNN`, write-once, own NVS namespace. The app's `device_id`. |
+| `src/rtc.h/.cpp` | SLM1302 3-wire RTC driver + UTC time service. Ported from the bring-up harness, not from the STM32. |
+| `src/counters.h/.cpp` | Earnings totals behind Live Counters. Own NVS namespace. |
+| `src/ble_diagnostics.cpp` | Diagnostics (`6a40f006`), read + notify, fault mailbox. |
+| `src/ble_command.cpp` | Command (`6a40f007`), write. A mailbox drained from `loop()` — never executes in the GATT callback. Physical ops refused unless `app_state_is_idle()`. |
+| `src/ble_sessionlog.cpp` | Session Log (`6a40f004`), stateful write-cursor-then-read pagination. Cursor is per BLE connection. |
+| `src/eventlog.h/.cpp` | The event store behind it — **one row per paid period**, hooked at `coin_consume_value_cents()` (billing) and `APP_STATE_SESSION_END` (close). **Its own 128 KB flash partition** (`vendolog`, `partitions_vendo.csv`), not NVS — a ring of 8,192 rows wrapping oldest-first. |
+
+Three things in here are load-bearing and easy to undo by accident:
+
+**1. Identity and counters are NOT in `AppConfig`, on purpose.** Both have their
+own NVS namespaces, untouched by `config.cpp`. `config_load()` falls back to
+`config_defaults()` on a magic mismatch, and §2.4 requires bumping
+`APP_CONFIG_MAGIC` on any layout change — so a serial or a lifetime total living
+in that blob would be silently reassigned or zeroed as a *side effect of the
+guard working correctly*. A factory reset must clear settings, not identity or
+takings.
+
+> **Standing rule:** *identity and monotonic counters are not configuration.*
+> The event log obeys it too: its records live in the `vendolog` flash partition
+> and its `seq` floor lives in `vendocnt`, so neither a magic bump nor a factory
+> reset can rewind sequence numbers into ids the backend has already filed.
+
+A useful consequence: none of this needed a magic bump, so §2.4's divergence
+still stands alone and the hardware-verified 37-byte Config frame is untouched.
+
+**2. Device Info (`f001`) must not ship alone.** The mobile app decides a board's
+entire profile on whether that characteristic exists — present means `full` and
+triggers a sync chain that requires `f004` and `f006` too; absent means
+`configOnly`, which is why Config works today. Exposing it early makes the app's
+connect fail outright, taking the working Config push with it. Hence the separate
+`[env:esp32dev-devinfo]` PlatformIO environment rather than a flag in the default
+build. See `src/ble_deviceinfo.h`.
+
+**3. Trickle charging is disabled in `rtc_init()` every boot, and read back.**
+BT1 is a CR2032 — non-rechargeable. Charging it can vent the cell, so this is a
+safety property, not a setting. Enabling it requires two deliberate macros and is
+a compile error otherwise.
+
+Still unbuilt: OTA (`f008`–`f00a`, `f00d`) and WiFi (`f00b`–`f00c`). Everything
+the app's sync sequence needs — `f001`–`f007` — exists as of 2026-09-15. See
+`docs/APP_BLE_PLAN.md`.
+
+**One STM32-diffability note from `f007`:** `app.cpp` gained a single line,
+`app_publish_state(state)` at the top of the state machine loop, so other tasks
+can ask whether the board is vending. It is the only outward-facing state the
+app task exposes, and it exists because a BLE relay test during a paid session is
+a customer complaint. Nothing reads it from inside `app.cpp`.
 
 ### 2.5 I2C recovery: register pokes → driver-reported status
 

@@ -38,6 +38,7 @@ Cross-references: `F1`–`F6` and `A1`–`A4` are the gap analysis's own IDs;
 | 2026-09-15 | `D7` | **Event log is a 128 KB dedicated flash partition (`vendolog`), oldest-first wrap, 10-event pages.** ~8,100 events, ~8 days at P1,000/day. NVS was rejected: 20 KB total, and it holds the write-once serial. Nothing below 0x290000 moves, so identity survives the repartition. |
 | 2026-09-15 | `D17` | **No "you missed rows" field was invented.** The backend already stores `machine.lastSeq` and receives the first event's seq, so a wrap gap is `firstSeq > lastSeq + 1` server-side. Firmware exposes the oldest retained seq via `AT+LOG?`. |
 | 2026-09-15 | `D18` | **A Session Log row is one SESSION, not one coin pulse** (user's decision, overriding the per-pulse build earlier the same day). One paid period = one row carrying the total billed, stamped at its first billing. `denom` is therefore **0** on every row — a session has no coin face value. **Needs the app team's sign-off**, see below. |
+| 2026-09-15 | `D20` | **A refused Command op is invisible to the app.** `f007` is write-only and the contract gives it no status channel, so the ATT write succeeds whether the op ran or not. Firmware logs refusals to serial. Surfacing them needs a field the app team would have to allocate. |
 | 2026-09-15 | `D19` | **`denom` on this hardware was never a coin denomination anyway.** It is `price_per_credit_cents / 100` — a config value, identical on every row, because the board sees pulses on one wire and cannot tell a P5 from a P20. The app's mixed-denomination breakdown can only ever have come from its simulator. |
 
 `D10` and `D11` together collapse a large part of this plan — see `A1` and `B1`.
@@ -86,7 +87,7 @@ solved at scan time with no characteristic involved.
 | B3 | — | ble | ~~Session Log `f004` + delta sync~~ — **built + hardware-verified 2026-09-15** (byte-exact 44-byte page from a board): `src/eventlog.*` + `src/ble_sessionlog.*`, `AT+LOG?` | — | `[x]` |
 | B4 | — | ble | ~~Live Counters~~ — **BUILT + hardware-verified 2026-09-14.** `f003`, Manila business day, per-coin lifetime, notify on change | — | `[x]` |
 | B5 | **P1** | ble | Diagnostics `f006` — **on the critical path**: B1 cannot ship without it. Mostly plumbing, the data already exists | B1 | `[ ]` |
-| B6 | P3 | ble | Command characteristic — incl. `reboot` (`F6`, closes `A4`) | A4 | `[ ]` |
+| B6 | — | ble | ~~Command `f007`~~ — **built 2026-09-15**: all 7 ops, physical ops gated on `app_state_is_idle()`, `AT+SYNC?`. Untested on hardware. `reboot` still needs an op code from the app team | — | `[x]` |
 | B7 | P4 | ble | OTA (`F6`) | field updates | `[ ]` |
 | B8 | P4 | ble | WiFi provisioning + cloud check-in (`F6`) | cloud | `[ ]` |
 | B9 | P2 | ble | Bonding / encryption (`F5`) — **before B8 carries credentials** | B8 safely | `[ ]` |
@@ -509,6 +510,11 @@ are sitting in `src/identity.h` ready to wire.
 > `f007`) and the OTA/WiFi set are gated separately in the app's UI and can still
 > follow on their own.
 >
+> **CORRECTED 2026-09-15: `B6` is NOT separately gated.** `acknowledgeSync()` is
+> called unconditionally with no `.catch()`, so `f007` belongs in the same
+> milestone as the rest. The OTA/WiFi half of this claim stands —
+> `readWifiStatus()` really is caught.
+>
 > Full analysis, with the app source lines, in `BLE_CONFIG_CONTRACT.md`.
 
 **Payload — SUPERSEDED 2026-09-14.** The fixed-width table previously proposed here
@@ -651,9 +657,9 @@ The design (wrap, the exclusive cursor, the app's own pagination loop) is
 exercised by `tools/eventlog_ring_model.py` — a Python transliteration, because
 there is no host toolchain here. It proves the *arithmetic*, not the C++.
 
-**Still open:** `f007` Command. The app calls `acknowledgeSync()` with no
-`.catch()`, so without it a connect throws *after* the backend upload has
-succeeded and `sync_ack` never arrives. `f004` alone does not complete a sync.
+**`f007` Command followed the same day** (`B6`), so the sync sequence is now
+complete in firmware. What remains before a board can present as `full` is `A7`,
+which is app-side.
 
 ## D18. [DECIDED 2026-09-15] A row is a session — and the ask that goes with it
 
@@ -716,19 +722,34 @@ Companions worth surfacing: LCD disabled after 3 failures, I2C recovery count
 (`R17`), and — per `D8` — **whether the board is unprovisioned**, which is
 otherwise invisible to an operator until earnings fail to show up.
 
-## B6. [P3] Command characteristic
+## B6. [BUILT 2026-09-15] Command characteristic
 
-`identify` (beep + LED), relay test, buzzer test, LED test, **`reboot`** — the last
-one closes `A4` and makes the reboot-to-apply convention livable without physical
-access. Must call `periph_reset_safe()` before `esp_restart()` (strapping pins —
-`R15` is the related gap in the shutdown handler).
+`src/ble_command.h/.cpp`, all seven ops, plus `AT+SYNC?`. **Compiles clean; never
+run on hardware.**
 
-Every op needs the same "is this safe while vending?" gate: a relay test during a
-paid session is a customer complaint.
+Three things in it are load-bearing:
 
-**Do not put serial provisioning here** unless `D8` and `B9` both say so. A
-`set_serial` op on an unbonded characteristic is strictly worse than the CLI path
-it would replace, because it needs no physical access at all.
+- **The GATT callback is a mailbox, not an executor.** `buzzer_beep_*()` blocks
+  on `vTaskDelay` for hundreds of milliseconds, and doing that inside a write
+  callback stalls the NimBLE host task — including the connection waiting on the
+  ATT response to that very write. The relay is worse: it belongs to the vend
+  state machine, and driving it from a second task is two owners on one GPIO.
+  So the callback queues and `ble_command_service()` drains it from `loop()`.
+- **Physical ops are gated on `app_state_is_idle()`**, a new one-word publisher
+  in `app.cpp` (one line in the state machine). A relay test during a paid
+  session is a customer complaint. Refused ops are **dropped, not deferred** —
+  replaying a beep minutes later, after the operator stopped watching, is worse
+  than not running it. `sync_ack`/`clear_errors`/`wifi_forget` are ungated;
+  refusing a `sync_ack` mid-vend would fail the app's connect for nothing.
+- **`sync_ack` is recorded and never applied.** Its `param` is the BACKEND's last
+  synced seq, which can legitimately be lower than the board's own (partial sync,
+  restored backup, second phone). Writing it into `counters_set_last_seq()` would
+  rewind the sequence numbers `f004` exists to keep monotonic. `AT+SYNC?` prints
+  it next to the board's own figure.
+
+**`reboot` was NOT invented.** `0x01`–`0x07` are all allocated in the app's
+`CommandOp`, and minting `0x08` unilaterally is exactly the silent-misparse
+failure `CLAUDE.md` forbids. `A4` stays open until the app team assigns one.
 
 ## B7. [P4] OTA
 

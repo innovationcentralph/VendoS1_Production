@@ -98,6 +98,17 @@ static uint8_t opmode_index_of(uint8_t mode) {
     return 0;
 }
 
+// ESP32-only: the app task's current state, published for other tasks to read.
+// volatile + a plain aligned word: a single 32-bit store on this core is atomic
+// on the ESP32, and the one consumer only ever asks "is it IDLE right now?",
+// which tolerates being a few milliseconds stale. A mutex here would put a
+// lock in the vend loop for a value nothing acts on twice.
+static volatile AppState s_published_state = APP_STATE_INIT;
+
+void app_publish_state(AppState st) { s_published_state = st; }
+
+bool app_state_is_idle() { return s_published_state == APP_STATE_IDLE; }
+
 static bool config_menu_run(AppConfig* cfg) {
     const uint32_t STEP           = 1000;
     const uint32_t MIN_MS         = 1000;
@@ -430,6 +441,13 @@ void app_task_run(void* arg) {
     const TickType_t AUTO_START_SETTLE_TICKS = pdMS_TO_TICKS(500);
 
     for (;;) {
+        // ESP32-only: publish the state so other tasks can ask whether this
+        // board is busy. One store of an aligned word, once per iteration; the
+        // only consumer is the BLE Command characteristic's "is it safe to fire
+        // the relay?" gate (src/ble_command.h). No STM32 counterpart — see
+        // docs/PORTING_FROM_STM32.md 2.5a.
+        app_publish_state(state);
+
         switch (state) {
 
         // ----------------------------------------------------------------

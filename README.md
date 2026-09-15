@@ -127,6 +127,71 @@ Most useful at bring-up:
 | `AT+CREDITS?` | Credits and money currently banked |
 | `AT+EEPROM_RESET` | Factory defaults |
 
+**Board identity, clock and earnings** — ESP32-only, no STM32 counterpart. Note
+these are *not* config: they live in their own NVS namespaces, so a factory reset
+clears settings without touching a board's identity or its takings.
+
+| | |
+|---|---|
+| `AT+SERIAL?` | The board's serial and MAC, or `UNPROVISIONED` |
+| `AT+SERIAL=VLABS-S1-NNNNN` | Provision the serial. **Write-once** — this is the app's `device_id` |
+| `AT+SERIAL_ERASE?` | The erase token for *this* board (last 3 MAC bytes) |
+| `AT+SERIAL_ERASE=<token>` | Clear the serial for RMA/refurb. Token-gated so a pasted command cannot orphan the wrong unit |
+| `AT+RTC?` | Clock status — chip time, system time, drift, validity, trickle register |
+| `AT+RTC=<epoch>` | Set the clock from epoch seconds **UTC** |
+| `AT+RTC=YYYY-MM-DD HH:MM:SS` | Same, in a form a human can type. UTC, clamped to 2026–2050 |
+| `AT+COUNTERS?` | Earnings totals — today, sessions, lifetime. Same data as BLE Live Counters |
+| `AT+LOG?` | Event log health — depth, seq range, wraps, drops |
+| `AT+LOG=<rows>[,<after_seq>]` | Dump events. `AT+LOG=10,0` is the first page the app would pull on a machine it has never synced |
+| `AT+SYNC?` | Whether the app has ever confirmed a sync, and up to which seq |
+
+`AT+COUNTERS?` is the bench version of the app's coin-path test: note `lifetime`,
+drop a coin, run it again. If it moved, the coin path and the configured polarity
+are both working.
+
+`AT+LOG?` is the same idea for the event log, with one difference worth knowing:
+**one row is one completed session**, not one coin. Coins insert, the relay runs,
+the period ends — that whole thing is a single row carrying the total billed.
+Money sitting banked (inserted, not yet spent) is in the box but not yet in any
+row. Amounts are **pesos**, because that is what the BLE wire carries — the rest
+of the firmware is in centavos.
+
+## BLE
+
+A GATT server (NimBLE), gated behind `-DENABLE_BLE`. The board advertises **its
+serial as the device name** — `VLABS-S1-00001`, or `VLABS-UNSET-xxxx` before it is
+provisioned — so a cabinet of machines is distinguishable in a scanner without
+connecting. **Clients must discover by service UUID**, not by name.
+
+Service `6a400001-0000-1000-8000-00805f9b0001`:
+
+| UUID | Characteristic | Props | State |
+|---|---|---|---|
+| `6a40f001` | Device Info | Read | built, **off by default** — see below |
+| `6a40f002` | Time Sync | Write | built |
+| `6a40f003` | Live Counters | Read/Notify | built, hardware-verified |
+| `6a40f004` | Session Log | Read/Write | built, **never run on hardware** — one row per session |
+| `6a40f005` | Config | Read/Write | shipping, hardware-verified |
+| `6a40f006` | Diagnostics | Read/Notify | built, hardware-verified |
+| `6a40f007` | Command | Write | built, **never run on hardware** — 7 ops, physical ones refused while vending |
+| `f008`–`f00d` | OTA, WiFi | — | not built |
+
+Full byte layouts and the complete UUID allocation are in
+`docs/BLE_CONFIG_CONTRACT.md`.
+
+> ⚠️ **Device Info is deliberately not in the default build.** The mobile app
+> decides a board's whole profile on whether `f001` exists: present means "full"
+> and triggers a sync chain that also needs `f004`, `f006` and `f007`; absent
+> means "config only", which is why Config works today. **Every characteristic
+> that chain needs now exists** (`f002`, `f003`, `f004`, `f006`, `f007`). What
+> still holds the flag off is app-side: a board reporting a real serial breaks
+> every machine claimed before Device Info existed, which needs a re-claim path
+> in the app first (`A7` in `docs/APP_BLE_PLAN.md`).
+>
+> Build `-e esp32dev-devinfo` to expose it for nRF Connect bench testing, which
+> has no notion of app profiles. Use the default `-e esp32dev` for any board the
+> app will touch.
+
 ## Design notes
 
 **The watchdog is external, unmaskable, and fast.** The TPL5010 (U5) drives

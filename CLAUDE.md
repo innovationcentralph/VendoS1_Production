@@ -46,7 +46,7 @@ Vendo_C1_TestCode/                 <- harness for the STM32 C1 board
 
 - **Hardware source of truth:** `../Vendo_I2C_Master_Slave/docs/hardware/ESP32_Vendo_Board.md`.
   If it and `include/pins.h` disagree, the schematic wins and `pins.h` is the bug.
-- **`../Vendo_S1_TestCode`** proves the board section by section from a CLI. It
+- **`../VendoLabs_TestCodes/Vendo_S1_TestCode`** proves the board section by section from a CLI. It
   already has the rigs for the measurements `docs/PENDING.md` asks for (watchdog
   timeout via `AT+WDT=0`, `I2C_INT` rise via `AT+INT=M`). Prove a board there
   before blaming this firmware.
@@ -213,6 +213,19 @@ One NVS blob (`vendo`/`appcfg`) via `Preferences`, replacing the STM32's
 flash-emulated EEPROM. No page-erase-per-byte problem, so no buffered-write
 trick is needed.
 
+**Three things deliberately live OUTSIDE that blob, in their own namespaces:**
+
+| Namespace | Holds | Why not `AppConfig` |
+| --- | --- | --- |
+| `vendoid` | the factory serial (`src/identity.*`) | a magic bump or factory reset must never reassign a board's identity |
+| `vendocnt` | earnings totals **and the event log's `seq` floor** (`src/counters.*`) | same, for lifetime takings; and rewinding `seq` corrupts backend delta sync |
+
+**Standing rule: identity and monotonic counters are not configuration.**
+`config_load()` falls back to `config_defaults()` on a magic mismatch, so
+anything in the blob gets silently reset *as a side effect of the guard working
+correctly*. That is right for settings and catastrophic for identity. Nothing in
+`config.cpp` reads or writes these namespaces.
+
 - **Bump `APP_CONFIG_MAGIC` on any `AppConfig` layout change.** A short or absent
   blob and a stale magic both fall back to defaults, which is the guard working.
 - **The magic deliberately differs from the STM32's** (`0xBEEF5107` vs
@@ -224,6 +237,78 @@ trick is needed.
 - CLI setters edit the *stored* copy and say `NOTE: send AT+RESET to apply`. The
   LCD menu is the path that applies immediately. `AT+COIN_POLARITY` is the one
   exception (applied live, because bench calibration needs a fast loop).
+
+**The event log is not in NVS at all — it has its own flash partition.**
+`vendolog`, 128 KB, 8,192 records of 16 bytes, defined in
+`partitions_vendo.csv` and driven by `src/eventlog.*`. Two rules come with it:
+
+- **Nothing below `0x290000` in that CSV may move.** `nvs` at `0x9000` holds the
+  write-once factory serial, and `app0`/`app1` offsets are baked into the OTA
+  data and into every binary already flashed. The 128 KB was taken from the
+  `spiffs` partition, which nothing in this firmware mounts.
+- **A board flashed from an older build keeps its old partition table** until
+  `partitions.bin` is uploaded (a normal `-t upload` does this). Until then the
+  boot banner says `` `vendolog` partition not found — Session Log (f004)
+  DISABLED`` and no events are recorded. Nothing else is affected.
+
+## BLE — and the one trap in it
+
+NimBLE GATT server behind `-DENABLE_BLE`. `ble_config.cpp` owns the service and
+Config (`f005`); every other characteristic is its own file registering into that
+service — `ble_timesync.cpp` (`f002`), `ble_livecounters.cpp` (`f003`),
+`ble_sessionlog.cpp` (`f004`), `ble_deviceinfo.cpp` (`f001`),
+`ble_diagnostics.cpp` (`f006`), `ble_command.cpp` (`f007`). Keep that shape:
+OTA and WiFi (`f008`–`f00d`) are still to come.
+
+**Session Log (`f004`) is the only stateful one.** The app writes a 4-byte
+`after_seq` cursor, then reads a page, then repeats with **the last seq it
+received** — so the cursor is exclusive on *every* page, not just the first, and
+the board must filter `seq > cursor` each time. The cursor is kept **per
+connection** (keyed on the NimBLE connection handle, released in the server's
+`onDisconnect`): the ESP32 permits three connections, and one global cursor
+would let two phones corrupt each other's pagination.
+
+UUIDs come from the app team's allocation table in `docs/BLE_CONFIG_CONTRACT.md`.
+**Never mint one by guessing the next free value** — the app has them compiled in,
+and a mismatch is a silent misparse, not an error.
+
+**`f001` Device Info is a capability probe, not just data.** The app decides a
+board's entire profile on whether it exists: present means `full` and triggers a
+sync chain needing `f004` and `f006` too; absent means `configOnly`, which is why
+Config works today. Exposing it early makes the app's connect fail outright,
+**taking the working Config push with it**. It is therefore built but OFF —
+`pio run -e esp32dev-devinfo` for nRF Connect bench work, default env for
+anything the app will touch. **Every characteristic that gate was waiting on now
+exists** (`f002`, `f003`, `f004`, `f006`, `f007`, 2026-09-15). The flag stays out
+of `[env:esp32dev]` for one reason that is **not firmware's to fix**: the app
+asserts `deviceInfo.deviceId === machine.deviceId` on every `full` connect, and
+machines claimed before `f001` existed stored the BLE MAC there. The first board
+to report a real serial breaks every already-claimed machine in that install.
+Flip it when the app has that re-claim path (`A7`), not before.
+
+**`f007` Command has one rule worth knowing before touching it.** Its GATT
+callback is a *mailbox*, never an executor: the beep helpers block for hundreds
+of ms (stalling the NimBLE host task, including the connection awaiting that
+write's ATT response) and the relay belongs to the app task, where two owners on
+one GPIO is how a relay latches on with nobody responsible. `loop()` executes.
+Physical ops are refused — dropped, never deferred — unless `app_state_is_idle()`.
+And `sync_ack` is recorded, never written into `counters_set_last_seq()`: it
+carries the *backend's* seq, which can be lower than the board's.
+
+Two contract facts that look like arbitrary choices and are not: **time is UTC**
+(`epoch_utc:u32`), and the **business day is Asia/Manila**, rolling at 16:00 UTC.
+The app displays the board's `today_amount` *instead of* the backend's figure
+while connected, so a UTC day boundary would make the number jump on connect.
+
+## The RTC is a power-loss backup, not the running clock
+
+`src/rtc.*` drives the SLM1302 on IO25/26/4. It seeds the system clock at boot;
+`time()` runs everything after that, and the system clock is written back hourly.
+Do not put an RTC read in a per-coin path — it is ~350 us of bit-banging.
+
+**BT1 is a CR2032. Trickle charging can vent it**, so `rtc_init()` writes register
+`0x90` to zero every boot *and reads it back*. Enabling it requires two macros and
+is a compile error otherwise. Treat that as a safety property, not a setting.
 
 ## Pins and strapping
 

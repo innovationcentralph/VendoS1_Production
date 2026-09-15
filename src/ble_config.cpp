@@ -6,6 +6,7 @@
 #include "ble_deviceinfo.h"
 #include "ble_diagnostics.h"
 #include "ble_sessionlog.h"
+#include "ble_command.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -303,6 +304,7 @@ void ble_config_init() {
     ble_livecounters_register(service);
     ble_sessionlog_register(service);
     ble_diagnostics_register(service);
+    ble_command_register(service);
 
     service->start();
 

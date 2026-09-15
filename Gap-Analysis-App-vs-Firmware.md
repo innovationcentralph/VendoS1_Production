@@ -36,7 +36,8 @@ The firmware's itemized backlog is `Vendo_S1_ProductionFirmware/docs/APP_BLE_PLA
 | 🔄 **A Session Log row is now one SESSION, not one coin pulse** | Product decision, 2026-09-15. Both forms were built and compared. **`denom` is 0 on every row as a result — this needs one change on your side.** |
 | 🔴 **Correction: `f007` Command is NOT optional** | The second revision said it was "gated separately in the UI and can wait". Reading `BleConnectionContext.tsx` disproves that — `acknowledgeSync()` is called unconditionally with no `.catch()`. It must land with the bundle. |
 | 🔴 **Correction: the coin-denomination breakdown was never reachable on an S1** | `denom` was `price_per_credit_cents / 100` — a config value, identical on every row. The mixed `P1/P5/P10/P20` spread comes from `seedDemo.ts`, not from any board. |
-| ⚠️ **`f001` still cannot ship** | `f004` and `f006` now exist, but `f007` does not. The gate is unchanged, only its reason narrowed. |
+| ✅ **`f007` Command built — the firmware side of the bundle is complete** | All seven ops. Physical ops are gated on "is this board vending?"; `sync_ack` is recorded but never applied. |
+| 🔴 **`f001` is now blocked ONLY by `A7`, which is yours** | Every characteristic the gate was waiting on exists. What stops the flip is the per-install re-key. Until that lands, no board can present as `full` without breaking already-claimed machines. |
 | ❌ **Still zero of 22 `REVIEW_FINDINGS` closed** | And the vend path has still never run end to end. |
 
 **The honest summary is unchanged in shape:** the BLE surface advanced again, the board's vend
@@ -133,7 +134,8 @@ meanwhile every bench-verification item in `PENDING.md` is open, all 22 `REVIEW_
 and the ported vend logic — operation modes, per-credit gating, accumulation, session expiry — has never
 executed on a board.
 
-One characteristic short of a complete sync: `f007` Command.
+**Every characteristic the sync sequence needs now exists.** What stands between here and a working
+end-to-end sync is `A7` — an app-side re-claim path — and a board that has been proven to vend.
 
 So the BLE column is now the *most* finished part of this product, which is exactly the misreading to
 guard against. See "The rest of the S1's work in progress" before treating the table below as a
@@ -150,7 +152,7 @@ completion estimate.
 | Live counters | `f003` | ✅ | ✅ | ✅ | ✅ **built + hardware-verified** |
 | Earnings / session log | `f004` | ✅ | ✅ | ✅ | ✅ **built 2026-09-15** — one row per session, `denom = 0`; never run on hardware |
 | Diagnostics / fault codes | `f006` | ✅ | ✅ | ✅ | ✅ **built + hardware-verified** |
-| Remote commands | `f007` | ✅ | ✅ | ✅ | ❌ **none — now the only thing blocking a complete sync** |
+| Remote commands | `f007` | ✅ | ✅ | ✅ | ✅ **built 2026-09-15** — all 7 ops; never run on hardware |
 | OTA firmware update | `f008`–`f00a`, `f00d` | ✅ | ✅ | ✅ | ❌ none |
 | WiFi provisioning + cloud | `f00b`–`f00c` | ✅ | ✅ | ✅ | ❌ none |
 | BLE bonding / encryption | — | ❌ | ✅ | ❌ | ❌ |
@@ -188,11 +190,14 @@ The moment `f001` is exposed, that same board reads as `full`, and `BleConnectio
 The first missing characteristic throws and **the connect fails entirely — including the Config push that
 works today**. Adding Device Info on its own is not an increment, it is a regression.
 
-So `f001`, `f002`, `f003`, `f004` and `f006` must land in one release, or none of them. All five now
-exist. **`f007` Command must land with them** — an earlier reading of this had it "gated separately in
-the UI", which `BleConnectionContext.tsx` disproves: `acknowledgeSync()` is called unconditionally and
-without a `.catch()`, so the connect throws *after* the backend upload has succeeded. (`readWifiStatus`
-is caught by the app, so the WiFi set really is not a blocker.)
+So `f001`, `f002`, `f003`, `f004`, `f006` **and `f007`** must land in one release, or none of them — an
+earlier reading of this had Command "gated separately in the UI", which `BleConnectionContext.tsx`
+disproves: `acknowledgeSync()` is called unconditionally and without a `.catch()`, so the connect throws
+*after* the backend upload has succeeded. (`readWifiStatus` is caught by the app, so the WiFi set really
+is not a blocker.)
+
+**As of 2026-09-15 all six exist in firmware.** The flag is still off, for one reason that is not ours:
+`A7`.
 
 **Firmware has made this structural rather than a note to remember.** `f001` is behind its own PlatformIO
 environment:
@@ -201,8 +206,9 @@ environment:
 - `pio run -e esp32dev-devinfo` — bench only, exposes `f001` for nRF Connect, which has no notion of app
   profiles. Prints a warning at boot.
 
-When `f007` exists — `f004` and `f006` now do — the flag moves into the default environment and the extra
-one is deleted.
+**The firmware side of that gate is now clear.** The flag moves into the default environment and this
+variant is deleted the moment the app has `A7`'s re-claim path — that is the only thing left holding it,
+and it is app-side.
 
 ---
 
@@ -447,11 +453,27 @@ already-provisioned board keeps the old value forever. Config pushed over `f005`
 correct one in the field, which is an argument for the app pushing a known-good config on first connect
 rather than assuming the board's defaults are current.
 
-**`f007` Command is NOT optional** — correcting this section's previous claim that it "is gated separately
-in the app's UI and can follow". `acknowledgeSync()` is called unconditionally with no `.catch()`, so
-without `f007` the connect throws after the backend upload has already succeeded. The `reboot` op that
-would close `A4` has no allocated op code (`0x01`–`0x07` are all taken) — **that allocation is yours to
-assign.**
+**`f007` Command is built (2026-09-15), and it was NOT optional** — correcting this section's previous
+claim that it "is gated separately in the app's UI and can follow". `acknowledgeSync()` is called
+unconditionally with no `.catch()`, so without it the connect throws after the backend upload has already
+succeeded.
+
+All seven ops are implemented. Three behaviours to expect:
+
+- **Physical ops are refused while a session is running** (`identify`, `testRelay`, `testBuzzer`,
+  `testLed`) and **dropped rather than queued** — a beep firing minutes later, after the technician has
+  walked away, is worse than none. `syncAck`, `clearErrors` and `wifiForget` run at any time, so a
+  mid-vend connect never fails on this account.
+- **A refusal is invisible to you.** The characteristic is write-only and the contract gives it no status
+  channel, so the ATT write succeeds either way. If the Diagnostics wizard needs to distinguish "tested"
+  from "refused", that needs a field you would have to allocate.
+- **`syncAck` is recorded, never applied.** Its param is the backend's last seq, which can legitimately be
+  lower than the board's; writing it back would rewind the sequence numbers delta sync depends on.
+
+**`wifiForget` is accepted and ignored** — there is no WiFi on this board yet.
+
+**The `reboot` op that would close `A4` has no allocated op code** (`0x01`–`0x07` are all taken) and
+firmware will not invent `0x08`. **That allocation is yours to assign.**
 
 OTA and WiFi are unchanged: two app slots are believed present but worth verifying against a real build,
 and WiFi + HTTP + JSON is what pushed the app-repo bring-up firmware to 94% of flash.
@@ -533,10 +555,9 @@ serial or physical access. The `reboot` op on `f007` closes it.
    coin now counts, but one DMM reading closes it properly.
 2. **`A7` — the app's re-claim path.** App-side, and it blocks `f001` from ever shipping. Cheap now.
 3. ~~**`f004` Session Log**~~ — built and **hardware-verified** 2026-09-15.
-4. **`f007` Command.** The only characteristic between the board and a completed sync. Not optional —
-   see the correction at the top of this document.
-   **In parallel, app-side: `A8`** (filter `denom == 0`), which is one line and unblocks nothing else but
-   makes the Analytics screen correct the day the first real sync lands.
+4. ~~**`f007` Command**~~ — built 2026-09-15, untested on hardware.
+   **The ball is now app-side: `A7`** (re-claim path, blocks `f001` and therefore the whole sync) and
+   **`A8`** (filter `denom == 0`, one line, makes Analytics correct the day the first real sync lands).
 5. **Flip `f001` on** — move `ENABLE_BLE_DEVICE_INFO` into the default environment. Only now is it safe,
    and only if step 2 landed.
 6. **Prove the vend path on hardware** (F5 of the board's own list). Independent of all the above and

@@ -21,3 +21,17 @@ typedef enum {
 
 // FreeRTOS task entry point — create this task in main.cpp setup().
 void app_task_run(void* arg);
+
+// ESP32/S1 ONLY — no STM32 counterpart, see docs/PORTING_FROM_STM32.md 2.5a.
+//
+// True when the board is not in the middle of anything a customer paid for or
+// an operator is editing: IDLE only. Exists for the BLE Command characteristic
+// (6a40f007), which must refuse a relay or buzzer test during a paid session —
+// a relay click mid-vend is a customer complaint, and a test beep reads as a
+// fault. Safe from any task: it reads a single aligned word published by the
+// app task once per iteration of its state machine.
+bool app_state_is_idle();
+
+// Called by the app task itself, once per state-machine iteration. Not for
+// anyone else to call.
+void app_publish_state(AppState st);

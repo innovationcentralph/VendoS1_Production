@@ -4,6 +4,7 @@
 #include "rtc.h"
 #include "counters.h"
 #include "eventlog.h"
+#include "ble_command.h"
 #include "diag.h"
 #include "periph.h"
 #include "display.h"
@@ -555,6 +556,30 @@ static void cmd_log(const char* args, Stream& out) {
     out.println("ERROR: usage  AT+LOG?  or  AT+LOG=<rows>[,<after_seq>]");
 }
 
+// AT+SYNC?  — has the app ever confirmed a sync, and up to which seq?
+//
+// The app sends sync_ack (Command op 0x01) at the end of every successful
+// connect, carrying the last seq the BACKEND holds. The board records it and
+// acts on nothing: that value comes from the server and can legitimately be
+// lower than the board own last_seq, so writing it back would rewind the
+// sequence numbers delta sync depends on (see src/ble_command.h).
+//
+// Useful on the bench for one question the serial log cannot otherwise answer:
+// did the phone actually complete a sync, or did it fail after uploading?
+static void cmd_sync(const char* args, Stream& out) {
+    (void)args;
+    if (!ble_command_ever_acked()) {
+        out.println("sync_ack  = never received");
+        out.println("  the app sends this at the end of a successful connect;");
+        out.println("  never seeing one means the connect failed, or f001 is still gated off");
+    } else {
+        out.print("sync_ack  = seq "); out.println(ble_command_last_acked_seq());
+        out.println("  (what the BACKEND holds — recorded only, never written to the board own counter)");
+    }
+    out.print("board last_seq = "); out.println(eventlog_last_seq());
+    out.println("OK");
+}
+
 // AT+DIAG?       — the fault mailbox and live sensor bits, i.e. exactly what
 //                  BLE Diagnostics (6a40f006) reports.
 // AT+DIAG_CLEAR  — empty the fault list.
@@ -795,6 +820,7 @@ static const CliCommand kCommands[] = {
     { "AT+DIAG",          "Fault list + live sensor bits (same data as BLE Diagnostics 6a40f006)", cmd_diag },
     { "AT+COUNTERS?",     "Earnings totals (same data as BLE Live Counters 6a40f003)", cmd_counters },
     { "AT+LOG",           "Event log: AT+LOG? or AT+LOG=<rows>[,<after_seq>] (same data as BLE Session Log 6a40f004)", cmd_log },
+    { "AT+SYNC?",         "Whether the app has confirmed a sync, and up to which seq (BLE Command 6a40f007)", cmd_sync },
     { "AT+RTC",          "Clock: AT+RTC? or AT+RTC=<epoch> or AT+RTC=YYYY-MM-DD HH:MM:SS (UTC)", cmd_rtc },
     // AT+SERIAL_ERASE must precede AT+SERIAL — see the ORDERING note above.
     { "AT+SERIAL_ERASE", "Clear the serial for re-provisioning: AT+SERIAL_ERASE=<token> (AT+SERIAL_ERASE? shows it)", cmd_serial_erase },
