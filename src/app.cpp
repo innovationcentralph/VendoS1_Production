@@ -109,6 +109,54 @@ void app_publish_state(AppState st) { s_published_state = st; }
 
 bool app_state_is_idle() { return s_published_state == APP_STATE_IDLE; }
 
+// ESP32-only: one-shot request for the USER_LED bench blink. Same volatile-word
+// reasoning as s_published_state above — a single aligned bool, one writer
+// (loop(), via the BLE Command mailbox) and one reader/clearer (the app task in
+// IDLE). Worst case on a simultaneous set and clear is a lost blink, which the
+// technician retries; there is nothing here worth a mutex in the vend loop.
+static volatile bool s_user_led_test_req = false;
+
+void app_request_user_led_test() { s_user_led_test_req = true; }
+
+bool app_state_allows_physical_op() {
+    return s_published_state == APP_STATE_IDLE || s_published_state == APP_STATE_TEST_MODE;
+}
+
+bool app_test_mode_active() { return s_published_state == APP_STATE_TEST_MODE; }
+
+// TEST MODE request channel - see the block comment in app.h. Same volatile
+// single-word discipline as s_published_state: one writer (loop(), via the BLE
+// Command mailbox or the CLI), one reader/clearer (the app task). The two
+// requests are tri-state rather than bool so that "no request pending" stays
+// distinguishable from "requested off" - a plain bool cannot express both, and
+// collapsing them would make an exit request indistinguishable from silence.
+static volatile int8_t   s_test_mode_req      = -1;   // -1 none, 0 leave, 1 enter
+static volatile int8_t   s_test_slot_req      = -1;   // -1 none, 0 inhibit, 1 enable
+static volatile uint32_t s_test_pulse_base    = 0;
+static volatile uint32_t s_test_activity_tick = 0;
+
+static volatile bool     s_test_btn_reset_req = false;
+static volatile uint32_t s_test_btn_presses   = 0;
+
+void app_request_test_mode(bool on) { s_test_mode_req = on ? 1 : 0; }
+void app_request_test_button_reset() { s_test_btn_reset_req = true; }
+uint32_t app_test_button_presses() { return s_test_btn_presses; }
+void app_request_test_coin_slot(bool on) { s_test_slot_req = on ? 1 : 0; }
+void app_test_mode_poke() { s_test_activity_tick = xTaskGetTickCount(); }
+
+bool app_test_mode_engaged() {
+    return s_published_state == APP_STATE_TEST_MODE || s_test_mode_req == 1;
+}
+
+uint32_t app_test_pulses() {
+    // Derived, never a counter of its own: the coin task owns the pulse count
+    // and this is a subtraction from a snapshot. Nothing here can perturb the
+    // banked money total, which is the invariant that matters (CLAUDE.md).
+    const uint32_t now  = coin_get_count();
+    const uint32_t base = s_test_pulse_base;
+    return (now >= base) ? (now - base) : 0;   // a coin_reset() elsewhere would otherwise underflow
+}
+
 static bool config_menu_run(AppConfig* cfg) {
     const uint32_t STEP           = 1000;
     const uint32_t MIN_MS         = 1000;
@@ -422,6 +470,9 @@ void app_task_run(void* arg) {
                                             // press_to_start_per_credit only: whole blocks
                                             // still to dispense one at a time
     uint32_t  last_idle_money_cents = UINT32_MAX; // forces redraw on first IDLE entry
+    bool      test_mode_entered     = false;      // one-shot entry actions for APP_STATE_TEST_MODE
+    uint32_t  test_last_pulses      = UINT32_MAX; // forces the TEST MODE screen to redraw on entry
+    uint32_t  test_last_presses     = UINT32_MAX; // same, for the user-button counter
     TickType_t ready_since_tick        = 0; // IDLE: tick credits became ready (inactivity_timeout_s)
     TickType_t last_money_change_tick  = 0; // IDLE: tick money_cents last changed (OP_AUTO_START settle window)
     TickType_t wait_next_credit_start  = 0; // WAIT_NEXT_CREDIT: tick this wait began
@@ -495,6 +546,26 @@ void app_task_run(void* arg) {
             const bool timeout_capable = (cfg.operation_mode == OP_PRESS_TO_START ||
                                           cfg.operation_mode == OP_PAUSE_RESUME);
 
+            // ESP32-only bench test, serviced here because this is the task
+            // that owns the pin (see app_request_user_led_test in app.h). It
+            // runs BEFORE the ready assert below so that line restores the
+            // lamp's real meaning the instant the blink finishes. Holds the app
+            // task for ~1 s: coins keep counting (higher-priority task) and the
+            // watchdog is petted by its own, so the only cost is a 1 s delay to
+            // the ready evaluation and the config gesture — acceptable for an
+            // operation a technician deliberately triggered while standing at
+            // an idle machine.
+            if (s_user_led_test_req) {
+                s_user_led_test_req = false;
+                Serial.println("[app] USER_LED test — blinking the button lamp");
+                for (int i = 0; i < 5; ++i) {
+                    digitalWrite(PIN_USER_LED, HIGH);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    digitalWrite(PIN_USER_LED, LOW);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+            }
+
             digitalWrite(PIN_USER_LED, ready ? HIGH : LOW);
 
             // Refresh display only when the ready/not-ready state changes
@@ -525,6 +596,16 @@ void app_task_run(void* arg) {
             const bool auto_start_settled = auto_start && ready &&
                 (xTaskGetTickCount() - last_money_change_tick) >= AUTO_START_SETTLE_TICKS;
 
+            // Entering test mode is honoured only from here, so it can never
+            // abandon a session a customer has paid for. A request arriving
+            // mid-vend is refused at the BLE layer and never reaches this flag.
+            if (s_test_mode_req == 1) {
+                s_test_mode_req = -1;
+                state = APP_STATE_TEST_MODE;
+                break;
+            }
+            s_test_mode_req = -1;   // a stray "leave" while already out of test mode is a no-op
+
             if (btn_b1_b2_long_pressed()) {
                 state = APP_STATE_CONFIG_MODE;
             } else if (start_button_pressed() || auto_start_settled || inactivity_elapsed) {
@@ -548,6 +629,124 @@ void app_task_run(void* arg) {
         //   accumulation_enabled or operation_mode — no coins should be
         //   accepted while settings are being changed.
         // ----------------------------------------------------------------
+        // ----------------------------------------------------------------
+        // TEST MODE - ESP32-only. See the block comment in app.h.
+        //
+        // Deliberately does NOTHING on its own: no coin billing, no START
+        // button, no Auto Start, no inactivity timeout, relay off. It exists to
+        // hold the board still while a technician drives it over BLE, which is
+        // why the physical-op gate (app_state_allows_physical_op) treats this
+        // state like IDLE rather than like a session.
+        // ----------------------------------------------------------------
+        case APP_STATE_TEST_MODE: {
+            if (!test_mode_entered) {
+                test_mode_entered = true;
+                // Park every output in a known state. A board entering test
+                // mode with the relay still engaged would keep dispensing with
+                // nothing left to turn it off.
+                relay_off();
+                leds_set(false);
+                digitalWrite(PIN_USER_LED, LOW);
+                // Inhibited on entry (user decision, 2026-09-17): a machine
+                // that is out of service should not take money it cannot
+                // immediately honour. app_request_test_coin_slot(true) re-opens
+                // it for coin-path verification.
+                coin_slot_disable();
+                s_test_pulse_base    = coin_get_count();
+                s_test_btn_presses   = 0;
+                s_test_btn_reset_req = false;
+                s_test_activity_tick = xTaskGetTickCount();
+                test_last_pulses     = UINT32_MAX;
+                test_last_presses    = UINT32_MAX;
+                // The gesture that got us here (or a pending START) must not
+                // leak in and immediately read as an exit or a session start.
+                start_button_flush();
+                (void)btn_b1_b2_long_pressed();
+                Serial.println("[app] TEST MODE - vend operation suspended, coin slot inhibited");
+            }
+
+            // Coin-slot request from the app. Enabling restarts the count from
+            // zero so each verification run reads from a known base; the banked
+            // money total is never touched (see app_test_pulses()).
+            if (s_test_slot_req >= 0) {
+                const bool want = (s_test_slot_req == 1);
+                s_test_slot_req = -1;
+                s_test_activity_tick = xTaskGetTickCount();
+                if (want) {
+                    s_test_pulse_base = coin_get_count();
+                    coin_slot_enable();
+                    Serial.println("[app] TEST MODE - coin slot ENABLED, counting from 0");
+                } else {
+                    coin_slot_disable();
+                    Serial.println("[app] TEST MODE - coin slot inhibited");
+                }
+                test_last_pulses = UINT32_MAX;   // force the screen to follow
+            }
+
+            if (s_test_btn_reset_req) {
+                s_test_btn_reset_req = false;
+                s_test_btn_presses   = 0;
+                s_test_activity_tick = xTaskGetTickCount();
+                test_last_presses    = UINT32_MAX;
+                start_button_flush();   // the press that asked for the reset must not count as the first press
+                Serial.println("[app] TEST MODE - button count reset to 0");
+            }
+
+            // Always live, no op required - see app_request_test_button_reset()
+            // in app.h. start_button_pressed() is the existing one-shot entry
+            // point and deliberately does NOT auto-repeat, so a held button
+            // counts once (STM32 fix 8e0c203 - see periph.h).
+            if (start_button_pressed()) {
+                ++s_test_btn_presses;
+                s_test_activity_tick = xTaskGetTickCount();   // a button press is activity too
+                Serial.print("[app] TEST MODE - user button press ");
+                Serial.println(s_test_btn_presses);
+            }
+
+            const bool     slot_on = coin_slot_enabled();
+            const uint32_t pulses  = app_test_pulses();
+            const uint32_t presses = s_test_btn_presses;
+            if (pulses != test_last_pulses || presses != test_last_presses) {
+                test_last_pulses  = pulses;
+                test_last_presses = presses;
+                display_show_test_mode(pulses, slot_on, presses);
+                if (slot_on && pulses > 0) {
+                    Serial.print("[app] TEST MODE - coin pulses: ");
+                    Serial.println(pulses);
+                }
+            }
+
+            // ---- the three exits (app.h explains why there are three) ----
+            const bool exit_op  = (s_test_mode_req == 0);
+            const bool exit_btn = btn_b1_b2_long_pressed();
+            const bool exit_idle =
+                (xTaskGetTickCount() - s_test_activity_tick) >= pdMS_TO_TICKS(TEST_MODE_IDLE_TIMEOUT_MS);
+
+            if (exit_op || exit_btn || exit_idle) {
+                s_test_mode_req      = -1;
+                s_test_slot_req      = -1;
+                s_test_btn_reset_req = false;
+                test_mode_entered    = false;
+                Serial.print("[app] TEST MODE exit - ");
+                Serial.println(exit_op  ? "command"
+                             : exit_btn ? "BTN1+BTN2"
+                                        : "60 s with no command");
+                // Hand the hardware back exactly as SESSION_END and the config
+                // menu do, so IDLE resumes from a known state.
+                relay_off();
+                leds_set(false);
+                digitalWrite(PIN_USER_LED, LOW);
+                coin_slot_enable();
+                start_button_flush();
+                last_idle_money_cents = UINT32_MAX;   // force the idle screen back over the banner
+                state = APP_STATE_IDLE;
+                break;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(20));
+            break;
+        }
+
         case APP_STATE_CONFIG_MODE:
             coin_slot_disable();
             buzzer_beep_enter_config();

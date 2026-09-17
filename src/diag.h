@@ -72,6 +72,27 @@
 #define DIAG_SENSOR_BIT_COIN      2
 #define DIAG_SENSOR_BIT_RTC       3
 
+// ---------------------------------------------------------------------------
+// Bit 4 = the user button (START, J1 pin 1). NOT ALLOCATED BY THE APP TEAM.
+// ---------------------------------------------------------------------------
+// Built and OFF by default, the same way ENABLE_BLE_DEVICE_INFO is, and for the
+// same reason: SensorBit is the APP's enum, and a bit we claim that they later
+// assign to something else does not error - it renders as whatever they made it
+// mean. A button press showing up as a door being opened is exactly the silent
+// misparse the allocation rule exists to prevent.
+//
+// Ask for it as `SensorBit.button = 4`: one bit, backward compatible in both
+// directions (an old app build ignores an unknown bit; a new one reading a board
+// that never sets it just sees 0). That is a far cheaper ask than a counter
+// field, which cannot be appended to this frame at all - the fault list is
+// variable-length and terminal, so anything added after the header shifts it.
+//
+// When they say yes: move -DENABLE_DIAG_BUTTON_BIT into [env:esp32dev] and
+// delete this comment. See APP_BLE_PLAN A14.
+#ifdef ENABLE_DIAG_BUTTON_BIT
+#define DIAG_SENSOR_BIT_BUTTON    4
+#endif
+
 // Wire frame: uptime u32, boot_ts u32, boot_ts_unverified u8, sensors u8,
 // errors_count u8, then that many code bytes. Variable length.
 #define DIAG_WIRE_HEADER_LEN 11

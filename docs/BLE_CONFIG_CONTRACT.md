@@ -203,7 +203,7 @@ These are a private vendor UUID space, not SIG-registered.
 | Session Log | `6a40f004` | Read/Write | ✅ built **and hardware-verified** 2026-09-15 (`src/ble_sessionlog.cpp`) |
 | **Config** | `6a40f005` | Read/Write | ✅ shipping |
 | Diagnostics | `6a40f006` | Read/Notify | ✅ built **and hardware-verified** |
-| Command | `6a40f007` | Write | ✅ built 2026-09-15 (`src/ble_command.cpp`) — all 7 ops |
+| Command | `6a40f007` | Write | ✅ built 2026-09-15 (`src/ble_command.cpp`) — the app's 7 ops, plus a provisional block `0x08`–`0x0B` claimed 2026-09-17: `test_user_led`, `test_mode`, `test_coin_slot`, `test_button` (`D21`–`D24`, needs `A13`) |
 | OTA Control | `6a40f008` | Write | ❌ |
 | OTA Data | `6a40f009` | Write | ❌ |
 | OTA Status | `6a40f00a` | Read/Notify | ❌ |
@@ -254,13 +254,29 @@ Taken from `codec.ts`, little-endian, so these need no further negotiation:
   read back `count:u8`, `has_more:u8`, then `count` × 14-byte entries of
   `seq:u32`, `ts:u32`, `ts_unverified:u8`, `denom:u8`, `amount:u32`.
 - **Diagnostics** (Read/Notify): `uptime:u32`, `boot_ts:u32`, `boot_ts_unverified:u8`,
-  `sensors_bitmap:u8` (door 0, vibration 1, coin 2, rtc 3), `errors_count:u8`, then that
+  `sensors_bitmap:u8` (door 0, vibration 1, coin 2, rtc 3, **button 4 — pending your
+  allocation, see below**), `errors_count:u8`, then that
   many `u8` codes. Codes: `0x01` coin pulse line fault, `0x02` relay drive fault,
   `0x03` RTC unset / battery-backup failure, `0x04` EEPROM write failure,
   `0x05` watchdog reset since last sync.
-- **Command** (Write, 5 B): `op:u8`, `param:u32`. Ops: `0x01` syncAck, `0x02` clearErrors,
-  `0x03` identify, `0x04` testRelay, `0x05` testBuzzer, `0x06` testLed, `0x07` wifiForget.
-  **Implemented 2026-09-15.** Three notes the app should know:
+- **Command** (Write, 5 B): `op:u8`, `param:u32`. **Implemented 2026-09-15**, extended
+  2026-09-17. Yours: `0x01` syncAck, `0x02` clearErrors, `0x03` identify, `0x04` testRelay,
+  `0x05` testBuzzer, `0x06` testLed, `0x07` wifiForget.
+
+  **Ours, provisional — `0x08`–`0x0B`, and we need these ratified (`A13`, P0):**
+
+  | Op | Name | Param | What it does |
+  |---|---|---|---|
+  | `0x08` | `testUserLed` | — | Flashes the **illuminated button lamp** (J1 pin 2). Distinct from `testLed` (`0x06`), which drives an internal debug LED no customer ever sees. |
+  | `0x09` | `testMode` | `1` enter / `0` leave | Suspends **all** vend operation. Enter refused unless idle; leave always accepted. |
+  | `0x0A` | `testCoinSlot` | `1` on / `0` off | Coin slot during test mode (inhibited on entry). Enabling restarts the pulse count at 0. Refused outside test mode. |
+  | `0x0B` | `testButton` | — | Re-zeroes the user-button press count. Refused outside test mode. |
+
+  > ⚠️ **These are the next sequential codes, which makes them the obvious choices for
+  > `reboot` too.** A collision on `0x09` would not be cosmetic — an app command would take a
+  > machine **out of service**. Please allocate the block, or give us four different codes.
+
+  Notes the app should know:
   - **Physical ops are refused while a session is running** (`identify`, `testRelay`, `testBuzzer`,
     `testLed`). A relay click mid-vend is a customer complaint. `syncAck`, `clearErrors` and
     `wifiForget` run at any time — refusing a `syncAck` mid-vend would fail a connect for no reason.
@@ -270,8 +286,32 @@ Taken from `codec.ts`, little-endian, so these need no further negotiation:
   - **`syncAck` is recorded, never applied.** The board keeps its own `last_seq`; writing the backend's
     value into it could rewind sequence numbers (a partial sync, a restored backup, a second phone).
   - **`wifiForget` is accepted and ignored** — there is no WiFi on this board yet.
-  - **`reboot` has no op code.** `0x01`–`0x07` are all taken and firmware will not invent `0x08`; the
-    allocation is yours. It is what `A4` needs.
+  - **`reboot` still has no op code**, and firmware has not invented one. `A4` is yours — but
+    note `0x08`–`0x0B` are now provisionally claimed above, so pick from `0x0C` up or tell us
+    to move.
+  - **Test mode always exits on its own.** 60 s with no command, a BTN1+BTN2 long press, or a
+    reboot — in addition to `0x09` param 0. You cannot strand a machine by disconnecting
+    mid-test, and you do not need to guarantee you send the exit.
+  - **Coins dropped during a test are real money.** They are banked and honoured on exit, and
+    they move `lifetime_amount` / `today_amount` at *acceptance*. Use a returnable coin.
+
+### Waiting on a coin or a button press
+
+Both of these are for your Diagnostics wizard, and they are not symmetric:
+
+- **Coin — works today, nothing needed from either side.** `f003` Live Counters is
+  Read/**Notify** and the board marks it dirty at coin *acceptance*, so **a coin produces
+  exactly one notification** and an idle board sends nothing at all. Subscribe and wait.
+  Exact pulses = Δamount ÷ (`price_per_credit_cents` ÷ 100), and you already read that
+  price from Config. There is no raw pulse-count field and we did not invent one — a counter
+  cannot be appended to the Diagnostics frame anyway, because its fault list is
+  variable-length and terminal.
+- **Button — needs one bit from you (`A14`, P1).** Please allocate **`SensorBit.button = 4`**.
+  One bit, backward compatible both ways: an old build ignores an unknown bit, a new one
+  reading a board that never sets it sees 0. Firmware is **built and gated** behind
+  `-DENABLE_DIAG_BUTTON_BIT` — it sets the bit from the live button level and marks the
+  frame dirty on each **edge**, so you get a notification per press and release rather than
+  having to poll. The flip is one line once you say yes.
 
 MTU: the app requests 247 but the contract requires firmware to still work at the default
 23, paging in smaller pages.

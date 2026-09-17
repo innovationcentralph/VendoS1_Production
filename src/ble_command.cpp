@@ -44,6 +44,10 @@ static const char* op_name(uint8_t op) {
         case CMD_OP_TEST_BUZZER:  return "test_buzzer";
         case CMD_OP_TEST_LED:     return "test_led";
         case CMD_OP_WIFI_FORGET:  return "wifi_forget";
+        case CMD_OP_TEST_USER_LED: return "test_user_led";
+        case CMD_OP_TEST_MODE:     return "test_mode";
+        case CMD_OP_TEST_COIN_SLOT: return "test_coin_slot";
+        case CMD_OP_TEST_BUTTON:   return "test_button";
         default:                  return "unknown";
     }
 }
@@ -54,7 +58,17 @@ static const char* op_name(uint8_t op) {
 // no reason at all.
 static bool op_is_physical(uint8_t op) {
     return op == CMD_OP_IDENTIFY || op == CMD_OP_TEST_RELAY ||
-           op == CMD_OP_TEST_BUZZER || op == CMD_OP_TEST_LED;
+           op == CMD_OP_TEST_BUZZER || op == CMD_OP_TEST_LED ||
+           op == CMD_OP_TEST_USER_LED;
+}
+
+// test_mode and test_coin_slot are gated, but not by op_is_physical: their rule
+// depends on the param. Entering test mode needs an idle board; leaving must
+// work from anywhere, including from a state the generic gate would refuse -
+// otherwise the exit op could be locked out by the very mode it exits.
+static bool op_has_own_gate(uint8_t op) {
+    return op == CMD_OP_TEST_MODE || op == CMD_OP_TEST_COIN_SLOT ||
+           op == CMD_OP_TEST_BUTTON;
 }
 
 // ============================================================================
@@ -69,7 +83,13 @@ static void stored_cfg(AppConfig* cfg) {
 }
 
 static void execute(const PendingCommand& c) {
-    if (op_is_physical(c.op) && !app_state_is_idle()) {
+    // Any command at all keeps test mode alive (see TEST_MODE_IDLE_TIMEOUT_MS).
+    // Before the gate, so even a refused op counts as the technician still being
+    // there - dropping out of test mode because the one op they tried was
+    // refused would be its own surprise.
+    app_test_mode_poke();
+
+    if (op_is_physical(c.op) && !op_has_own_gate(c.op) && !app_state_allows_physical_op()) {
         // Dropped, not deferred — running it minutes later, after the operator
         // has stopped watching, is worse than not running it. Invisible to the
         // app by construction (write-only characteristic); serial is the only
@@ -103,13 +123,28 @@ static void execute(const PendingCommand& c) {
             break;
 
         case CMD_OP_IDENTIFY:
-            // "Which machine am I connected to?" — deliberately the config
-            // beep rather than a session beep, so nobody standing at the
-            // machine mistakes it for a vend starting.
-            stored_cfg(&cfg);
-            leds_set(true);
-            buzzer_beep_enter_config();
-            leds_set(false);
+            // "Which machine am I connected to?" — must be visible from across
+            // a room and audible over an arcade, because that is the entire
+            // job. It does NOT use buzzer_beep_enter_config(): that is an empty
+            // stub on this board and on the STM32 (see periph.cpp, and CLAUDE.md
+            // on inherited stubs), which made identify silent AND its LED pulse
+            // a few microseconds wide — leds_set(true), an instant-return stub,
+            // leds_set(false). Implementing the config beep to fix this would
+            // diverge the two firmwares over a cosmetic, so the pattern lives
+            // here instead.
+            //
+            // buzzer_beep_denied() is the only real tone that is not a vend
+            // tone (one 400 Hz buzz, vs. start 2x1000 Hz and end 3x2500 Hz), so
+            // nobody standing at the machine mistakes identify for a session
+            // starting. The blink is 5x100 ms, distinguishable by eye from
+            // test_led's slower 3x200 ms.
+            buzzer_beep_denied();
+            for (int i = 0; i < 5; ++i) {
+                leds_set(true);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                leds_set(false);
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
             Serial.println("BLE identify");
             break;
 
@@ -134,6 +169,66 @@ static void execute(const PendingCommand& c) {
                 vTaskDelay(pdMS_TO_TICKS(200));
             }
             Serial.println("BLE test_led");
+            break;
+
+        case CMD_OP_TEST_USER_LED:
+            // Handed to the app task rather than run here: it owns PIN_USER_LED
+            // and re-asserts it every 20 ms in IDLE, so a blink from loop()
+            // would be overwritten before anyone saw it. See
+            // app_request_user_led_test() in app.h. The idle gate above has
+            // already passed, and the app task honours the request in IDLE
+            // only, so the two agree even if the state changes in between.
+            app_request_user_led_test();
+            Serial.println("BLE test_user_led — handed to the app task");
+            break;
+
+        case CMD_OP_TEST_MODE:
+            if (c.param != 0) {
+                // Entering needs an idle board. Refusing here rather than in
+                // the app task is what keeps the request flag from ever being
+                // set mid-session (see APP_STATE_IDLE in app.cpp).
+                if (!app_state_is_idle()) {
+                    Serial.println("BLE test_mode ENTER REFUSED - board is not idle");
+                    break;
+                }
+                app_request_test_mode(true);
+                Serial.println("BLE test_mode ENTER - vend operation will suspend");
+            } else {
+                // Always accepted, from any state. An exit that could be
+                // refused is not an exit.
+                app_request_test_mode(false);
+                Serial.println("BLE test_mode LEAVE");
+            }
+            break;
+
+        case CMD_OP_TEST_COIN_SLOT:
+            // engaged(), not active(): see app.h - the app sends this
+            // immediately after the enter op, before the app task has
+            // published the new state.
+            if (!app_test_mode_engaged()) {
+                // Outside test mode the coin slot belongs to the vend state
+                // machine, which would fight us for IO12 - and losing that
+                // fight in the wrong direction means taking money no session
+                // will bill. See ble_command.h.
+                Serial.println("BLE test_coin_slot REFUSED - only valid in test mode");
+                break;
+            }
+            app_request_test_coin_slot(c.param != 0);
+            Serial.print("BLE test_coin_slot - ");
+            Serial.println(c.param != 0 ? "ENABLE (count restarts at 0)" : "INHIBIT");
+            break;
+
+        case CMD_OP_TEST_BUTTON:
+            // Resets a counter; drives nothing. Refused outside test mode only
+            // because the counter has no meaning there - START is the session
+            // button everywhere else, and a count of "sessions a customer
+            // started" is not what anyone asking for this wants.
+            if (!app_test_mode_engaged()) {
+                Serial.println("BLE test_button REFUSED - only valid in test mode");
+                break;
+            }
+            app_request_test_button_reset();
+            Serial.println("BLE test_button - press count reset to 0");
             break;
 
         case CMD_OP_WIFI_FORGET:

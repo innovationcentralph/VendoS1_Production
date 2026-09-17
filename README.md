@@ -144,10 +144,35 @@ clears settings without touching a board's identity or its takings.
 | `AT+LOG?` | Event log health — depth, seq range, wraps, drops |
 | `AT+LOG=<rows>[,<after_seq>]` | Dump events. `AT+LOG=10,0` is the first page the app would pull on a machine it has never synced |
 | `AT+SYNC?` | Whether the app has ever confirmed a sync, and up to which seq |
+| `AT+TEST?` | Test-mode status — coin slot, pulse count, button press count |
+| `AT+TEST=1` / `AT+TEST=0` | Enter / leave test mode. Entering requires an idle board |
+| `AT+TEST=COIN1` / `=COIN0` | Coin slot while in test mode. Enabling restarts the pulse count at 0 |
+| `AT+TEST=BTN0` | Re-zero the user-button press count |
 
 `AT+COUNTERS?` is the bench version of the app's coin-path test: note `lifetime`,
 drop a coin, run it again. If it moved, the coin path and the configured polarity
 are both working.
+
+### Test mode
+
+`AT+TEST=1` (or BLE Command op `0x09`) puts the board in a diagnostic hold where
+**no vend operation happens at all** — coins start no session, START does
+nothing, Auto Start does not fire, the inactivity timeout does not run, and the
+relay stays off. The LCD shows `TEST MODE` with a live coin-pulse and
+user-button count, so an operator can see why the machine is not serving. It
+exists so the relay, buzzer, LEDs, coin path and button can be exercised
+one at a time while the board holds still.
+
+The coin slot is **inhibited on entry** — a machine out of service should not
+take money it cannot honour — and `AT+TEST=COIN1` reopens it for coin-path
+verification. Pulses counted then never touch the banked money total, but the
+coins themselves **are** banked and honoured on exit, so use a returnable coin.
+The user-button count needs no command at all; it is live the whole time.
+
+**There are three ways out, and that is deliberate:** the exit command, **60 s
+with no command**, and a **BTN1+BTN2 long press**. Test mode is also RAM-only, so
+a reboot always comes back in normal operation. A board whose only exit is a
+command it can no longer receive would be stranded out of service in the field.
 
 `AT+LOG?` is the same idea for the event log, with one difference worth knowing:
 **one row is one completed session**, not one coin. Coins insert, the relay runs,
@@ -173,7 +198,7 @@ Service `6a400001-0000-1000-8000-00805f9b0001`:
 | `6a40f004` | Session Log | Read/Write | built, **never run on hardware** — one row per session |
 | `6a40f005` | Config | Read/Write | shipping, hardware-verified |
 | `6a40f006` | Diagnostics | Read/Notify | built, hardware-verified |
-| `6a40f007` | Command | Write | built, **never run on hardware** — 7 ops, physical ones refused while vending |
+| `6a40f007` | Command | Write | built, **never run on hardware** — the app's 7 ops plus a provisional `0x08`–`0x0B` (`test_user_led`, `test_mode`, `test_coin_slot`, `test_button`), physical ones refused while vending |
 | `f008`–`f00d` | OTA, WiFi | — | not built |
 
 Full byte layouts and the complete UUID allocation are in

@@ -49,12 +49,17 @@ typedef enum : uint8_t {
     DISP_CONFIG_SENSOR_WAIT,
     DISP_DENIED,
     DISP_CONFIG_PRICE,
+    DISP_TEST_MODE,
 } DispType;
 
 typedef struct {
     DispType type;
     uint32_t a;   // credits / remaining_ms / relay_on_ms
     uint32_t b;   // required (IDLE / READY only)
+    uint32_t c;   // TEST_MODE only: button presses. Added rather than packed
+                  // into the spare bits of b - this struct is private to this
+                  // file and 4 bytes x a depth-8 queue is not worth a bitfield
+                  // nobody would remember the layout of.
 } DispMsg;
 
 // =============================================================================
@@ -462,6 +467,24 @@ static void lcd_render_denied() {
     lcd_row_centered(1, "CREDIT");
 }
 
+static void lcd_render_test_mode(uint32_t pulses, bool slot_on, uint32_t presses) {
+    lcd_row_centered(0, "TEST MODE");
+    // Both counters on one row, because a technician verifying the J1 harness
+    // is watching the coin line and the button at the same time and cannot page
+    // a 16x2 display. "--" for an inhibited slot rather than "0": those are
+    // different facts, and a zero would read as a coin path that is enabled and
+    // not working. PULSES, not COINS - an acceptor set to P1/pulse emits five
+    // pulses for a P5 coin, which is the whole basis of the billing model.
+    char label[17];
+    if (slot_on) {
+        snprintf(label, sizeof(label), "PLS:%lu BTN:%lu",
+                 (unsigned long)pulses, (unsigned long)presses);
+    } else {
+        snprintf(label, sizeof(label), "PLS:-- BTN:%lu", (unsigned long)presses);
+    }
+    lcd_row_centered(1, label);
+}
+
 static void lcd_render_config_price(uint32_t price_cents) {
     lcd_row_centered(0, "PRICE PER PULSE");
     char label[15];
@@ -473,9 +496,9 @@ static void lcd_render_config_price(uint32_t price_cents) {
 // =============================================================================
 // Queue post helper — non-blocking, called from any task
 // =============================================================================
-static void disp_post(DispType type, uint32_t a, uint32_t b) {
+static void disp_post(DispType type, uint32_t a, uint32_t b, uint32_t c = 0) {
     if (!s_disp_queue) return;
-    const DispMsg msg = { type, a, b };
+    const DispMsg msg = { type, a, b, c };
     xQueueSendToBack(s_disp_queue, &msg, 0);   // drop if full, never block caller
 }
 
@@ -560,6 +583,10 @@ void display_show_next_credit(uint32_t remaining_credits) {
 }
 void display_show_config_price(uint32_t price_cents) {
     disp_post(DISP_CONFIG_PRICE, price_cents, 0);
+}
+
+void display_show_test_mode(uint32_t pulses, bool slot_on, uint32_t presses) {
+    disp_post(DISP_TEST_MODE, pulses, slot_on ? 1 : 0, presses);
 }
 
 void display_set_idle_pricing(uint32_t coins_required, uint32_t relay_on_ms, bool per_credit_mode) {
@@ -728,6 +755,9 @@ void display_task_run(void* arg) {
                 break;
             case DISP_CONFIG_PRICE:
                 if (s_type == DISPLAY_LCD_16X2) lcd_render_config_price(msg.a);
+                break;
+            case DISP_TEST_MODE:
+                if (s_type == DISPLAY_LCD_16X2) lcd_render_test_mode(msg.a, msg.b != 0, msg.c);
                 break;
         }
     }

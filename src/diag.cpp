@@ -54,6 +54,13 @@ uint8_t diag_sensors_bitmap() {
     // Not a sensor in the physical sense: "the clock is set and trustworthy".
     if (rtc_valid()) b |= (uint8_t)(1u << DIAG_SENSOR_BIT_RTC);
 
+#ifdef ENABLE_DIAG_BUTTON_BIT
+    // Live user-button level, so the app can WAIT on a press rather than poll
+    // for one. Paired with the change detection in diag_service(), which is
+    // what actually pushes the notification. See diag.h on why this is gated.
+    if (user_btn_raw_pressed()) b |= (uint8_t)(1u << DIAG_SENSOR_BIT_BUTTON);
+#endif
+
     return b;
 }
 
@@ -116,6 +123,23 @@ void diag_service() {
     // it belongs in the list even after a clear_errors. Re-raising is free —
     // diag_raise() is idempotent and only marks dirty on a real transition.
     if (!rtc_valid()) diag_raise(DIAG_ERR_RTC_UNSET);
+
+#ifdef ENABLE_DIAG_BUTTON_BIT
+    // Mark the frame dirty on a button EDGE so ble_diagnostics_service() pushes
+    // a notification and the app can wait on a press instead of polling for it.
+    //
+    // Reads the pin directly rather than calling diag_sensors_bitmap(): that
+    // function does a config_load_quiet() for the sensor polarity, and an NVS
+    // read on this 10 ms path would be absurd. Edge-triggered, so an idle board
+    // still sends nothing; a press/release pair is two frames per session,
+    // which is nothing next to the per-coin frames f003 already sends.
+    static bool s_btn_last = false;
+    const bool  now = user_btn_raw_pressed();
+    if (now != s_btn_last) {
+        s_btn_last = now;
+        s_dirty    = true;
+    }
+#endif
 }
 
 void diag_init() {

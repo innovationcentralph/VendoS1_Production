@@ -5,6 +5,7 @@
 #include "counters.h"
 #include "eventlog.h"
 #include "ble_command.h"
+#include "app.h"          // AT+TEST drives the app task test-mode request channel
 #include "diag.h"
 #include "periph.h"
 #include "display.h"
@@ -556,6 +557,80 @@ static void cmd_log(const char* args, Stream& out) {
     out.println("ERROR: usage  AT+LOG?  or  AT+LOG=<rows>[,<after_seq>]");
 }
 
+// AT+TEST?  — test-mode status.  AT+TEST=1 / =0  — enter / leave.
+// AT+TEST=COIN1 / =COIN0  — coin slot while in test mode.
+//
+// This is the serial face of BLE Command ops 0x09/0x0A, and it carries more
+// weight than the usual "same data as" CLI mirror, for two reasons:
+//
+//   1. It is the bench path. Test mode exists to be driven while a technician
+//      watches, and USB serial is the channel that works before the app does.
+//   2. THE PULSE COUNT IS ONLY VISIBLE HERE. Neither f003 Live Counters nor
+//      f006 Diagnostics has a field for a raw coin count (f003 carries money
+//      and session totals, f006 uptime/boot/sensor bits/faults), and inventing
+//      one is the app team's call, not ours — see A14. f006 DOES expose a live
+//      coin-line bit the app can already watch toggle; a number needs A14.
+static void cmd_test(const char* args, Stream& out) {
+    if (args == nullptr || *args == '?' || *args == '\0') {
+        out.print("test mode = "); out.println(app_test_mode_active() ? "ACTIVE" : "off");
+        if (app_test_mode_active()) {
+            out.print("  coin slot = ");
+            out.println(coin_slot_enabled() ? "ENABLED (counting)" : "inhibited");
+            out.print("  pulses    = "); out.println(app_test_pulses());
+            out.print("  button    = "); out.print(app_test_button_presses());
+            out.println(" presses (always counted; AT+TEST=BTN0 re-zeroes)");
+            out.println("  exits: AT+TEST=0, BTN1+BTN2 long, or 60 s with no command");
+        } else {
+            out.println("  AT+TEST=1 to enter (idle only), then AT+TEST=COIN1 to open the slot");
+        }
+        out.println("OK");
+        return;
+    }
+    if (*args == '=') ++args;
+
+    if (strcasecmp(args, "COIN1") == 0 || strcasecmp(args, "COIN0") == 0) {
+        const bool on = (args[4] == '1');
+        if (!app_test_mode_engaged()) {
+            out.println("ERROR: not in test mode — the coin slot belongs to the vend state machine");
+            return;
+        }
+        app_request_test_coin_slot(on);
+        app_test_mode_poke();
+        out.print("coin slot -> "); out.println(on ? "ENABLE (count restarts at 0)" : "INHIBIT");
+        out.println("OK");
+        return;
+    }
+    if (strcasecmp(args, "BTN0") == 0) {
+        if (!app_test_mode_engaged()) {
+            out.println("ERROR: not in test mode — the button count has no meaning there");
+            return;
+        }
+        app_request_test_button_reset();
+        app_test_mode_poke();
+        out.println("user button press count -> 0");
+        out.println("OK");
+        return;
+    }
+    if (strcmp(args, "1") == 0) {
+        if (!app_state_is_idle()) {
+            out.println("ERROR: board is not idle — test mode must never abandon a paid session");
+            return;
+        }
+        app_request_test_mode(true);
+        app_test_mode_poke();
+        out.println("entering TEST MODE — vend operation suspended, coin slot inhibited");
+        out.println("OK");
+        return;
+    }
+    if (strcmp(args, "0") == 0) {
+        app_request_test_mode(false);
+        out.println("leaving TEST MODE");
+        out.println("OK");
+        return;
+    }
+    out.println("ERROR: usage  AT+TEST?  |  =1  |  =0  |  =COIN1  |  =COIN0  |  =BTN0");
+}
+
 // AT+SYNC?  — has the app ever confirmed a sync, and up to which seq?
 //
 // The app sends sync_ack (Command op 0x01) at the end of every successful
@@ -821,6 +896,7 @@ static const CliCommand kCommands[] = {
     { "AT+COUNTERS?",     "Earnings totals (same data as BLE Live Counters 6a40f003)", cmd_counters },
     { "AT+LOG",           "Event log: AT+LOG? or AT+LOG=<rows>[,<after_seq>] (same data as BLE Session Log 6a40f004)", cmd_log },
     { "AT+SYNC?",         "Whether the app has confirmed a sync, and up to which seq (BLE Command 6a40f007)", cmd_sync },
+    { "AT+TEST",          "Test mode: AT+TEST? | =1 | =0 | =COIN1 | =COIN0 | =BTN0 (BLE Command 0x09-0x0B). Only place the pulse/button counts are readable", cmd_test },
     { "AT+RTC",          "Clock: AT+RTC? or AT+RTC=<epoch> or AT+RTC=YYYY-MM-DD HH:MM:SS (UTC)", cmd_rtc },
     // AT+SERIAL_ERASE must precede AT+SERIAL — see the ORDERING note above.
     { "AT+SERIAL_ERASE", "Clear the serial for re-provisioning: AT+SERIAL_ERASE=<token> (AT+SERIAL_ERASE? shows it)", cmd_serial_erase },

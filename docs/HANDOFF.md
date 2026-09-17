@@ -229,10 +229,88 @@ AT+SYNC?                   # "never received" until an app actually connects
 ```
 02 00000000   clear_errors  -> AT+DIAG? list empties (0x03 re-raises if clock unset)
 03 00000000   identify      -> beep + LED
-05 00000000   test_buzzer   -> start-beep pattern
+05 00000000   test_buzzer   -> start-beep pattern (2x 1000 Hz)
+06 00000000   test_led      -> D7 blue DEBUG led, 3x 200 ms
+08 00000000   test_user_led -> J1 BUTTON LAMP, 5x 100 ms (provisional op, D21/A13)
 01 2A000000   sync_ack(42)  -> AT+SYNC? shows seq 42
 04 00000000   test_relay    -> relay clicks for 500 ms
 ```
+
+**Test mode (`0x09`/`0x0A`, provisional — `D22`/`D23`):**
+
+```
+09 01000000   enter test mode   -> LCD "TEST MODE / SLOT INHIBITED", vend dead
+0A 01000000   coin slot on      -> LCD "TEST MODE / COINS: n", counts from 0
+              drop a coin       -> n increments; AT+TEST? shows it too
+0A 00000000   coin slot off     -> "PLS:-- BTN:n"
+              press the button  -> BTN:n increments with NO command needed
+0B 00000000   reset btn count   -> BTN:0
+09 00000000   leave test mode   -> idle screen returns
+```
+
+The J1 harness is worth doing as one pass, since both its pins are on the same
+connector: `08` flashes the lamp (J1 pin 2), pressing the button moves `BTN:`
+(J1 pin 1). A lamp that flashes with a button that never counts is a broken
+pin 1; neither working points at the connector or Q1.
+
+### Watching the coin and button over BLE, in nRF Connect
+
+Flash **`esp32dev-devinfo`** for this — the user-button bit is not in the default
+build (see `A14`). Re-flash `esp32dev` before any phone running the app touches
+that board: `devinfo` also exposes `f001`, which fails the app's connect outright.
+
+Connect to `VLABS-S1-<serial>` (or `VLABS-UNSET-xxxx`), service
+`6a400001-0000-1000-8000-00805f9b0001` — **not** `6a40f000`, which is the
+app-repo bring-up firmware. Enable CCCD (the three-arrows icon) on `f003` and
+`f006` first; `notify()` is a no-op with no subscriber. Write ops to `f007` as a
+**BYTE ARRAY**, 5 bytes, **Write Request** — the characteristic is `WRITE`, so
+write-without-response is rejected.
+
+**Coin — `f003` notifies once per pulse**, 14 bytes, all little-endian:
+
+| Offset | Len | Field | Note |
+|---|---|---|---|
+| 0 | 4 | `today_amount` | **pesos**, not centavos |
+| 4 | 2 | `today_sessions` | u16 — leaves the next field on an odd offset, which is the contract |
+| 6 | 4 | `lifetime_amount` | pesos |
+| 10 | 4 | `last_seq` | |
+
+Drop a coin and watch bytes 0-3 and 6-9 step. `pulses = Δamount / (price_per_credit_cents / 100)`.
+
+**Button — `f006` notifies on each edge**, so two frames per press:
+
+| Offset | Len | Field |
+|---|---|---|
+| 0 | 4 | `uptime_s` |
+| 4 | 4 | `boot_ts` |
+| 8 | 1 | `boot_ts_unverified` |
+| 9 | 1 | **`sensors_bitmap`** |
+| 10 | 1 | `errors_count` |
+| 11+ | n | fault codes |
+
+Byte 9: `0x01` door/AUX_1, `0x02` vibration (always 0 on the S1), `0x04` coin line
+asserted now, `0x08` RTC valid, `0x10` **user button pressed**. With the clock set,
+byte 9 should read `08` -> `18` on press -> `08` on release. If `0x10` never
+appears you are on the wrong build.
+
+Then prove the three exits, because a board that cannot leave test mode is a
+board out of service in the field:
+
+```
+09 01000000   then disconnect the phone and wait   -> exits itself after 60 s
+09 01000000   then hold BTN1+BTN2 long             -> exits, no phone needed
+09 01000000   then tap RESET                       -> boots in NORMAL operation
+```
+
+Also confirm `09 01000000` is **REFUSED** during a session (it must never
+abandon a paid vend), and that `0A` is refused when not in test mode.
+
+`03` and `08` are the two that were wrong or missing before 2026-09-17, so check
+them deliberately: `identify` used to call an empty beep stub (silent, with an
+LED pulse microseconds wide), and the button lamp had no test at all — `06` only
+ever drove D7, which no customer looks at. `08` is executed by the **app task**,
+not `loop()`, because that task re-asserts IO23 every 20 ms in IDLE; expect
+`[app] USER_LED test` on serial, not just the `BLE test_user_led` line.
 
 Then start a session and send `04` again **while it runs**: it must be REFUSED,
 with `test_relay REFUSED — a session is in progress` on the serial console and

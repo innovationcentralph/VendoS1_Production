@@ -233,6 +233,8 @@ bool coin_counter_polarity() { return s_coin_active_high; }
 
 bool coin_raw_level() { return digitalRead(PIN_COIN_IN) == HIGH; }
 
+bool user_btn_raw_pressed() { return digitalRead(PIN_USER_BTN) == LOW; }
+
 void coin_counter_task_run(void* arg) {
     (void)arg;
 

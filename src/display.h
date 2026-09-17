@@ -110,6 +110,15 @@ void display_show_config_price(uint32_t price_cents);
 //     floor(credits / coins_required) * relay_on_ms.
 // Call once after config_load() and again after any config-menu save so the
 // idle screen reflects the live values.
+// ESP32-only: the TEST MODE banner. `pulses` is the coin-pulse count since the
+// slot was last test-enabled, `slot_on` whether it is accepting right now, and
+// `presses` the START/user-button press count. Shown so an operator walking up
+// to a dead machine can see WHY it is dead — a board in test mode ignores coins
+// and starts no session, and without this it just looks broken. Both counters
+// share one row: a technician verifying the J1 harness watches the coin line
+// and the button together. No STM32 counterpart.
+void display_show_test_mode(uint32_t pulses, bool slot_on, uint32_t presses);
+
 void display_set_idle_pricing(uint32_t coins_required, uint32_t relay_on_ms, bool per_credit_mode);
 
 // Diagnostic snapshot for AT+LCD? — whether the panel is considered healthy,

@@ -73,6 +73,15 @@ void     coin_counter_set_polarity(bool active_high);
 bool     coin_counter_polarity();
 // Live level on PIN_COIN_IN, for AT+COIN? bench checks.
 bool     coin_raw_level();
+
+// Live, undebounced state of PIN_USER_BTN (START, J1 pin 1): true = pressed.
+// Polarity is fixed, not configurable - the button has an external pull-up and
+// shorts to ground, so pressed is LOW (see the INPUT note in pins.h).
+//
+// Undebounced ON PURPOSE. This is for reporting a level, not for detecting a
+// press: use start_button_pressed() for that, which owns the one debounce state
+// machine all three START meanings come from and must not be bypassed.
+bool     user_btn_raw_pressed();
 // Returns true if at least one credit has been counted since last consume/reset.
 bool     coin_detected();
 // Thread-safe read of current raw pulse count (diagnostic — billing runs off

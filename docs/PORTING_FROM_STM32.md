@@ -162,7 +162,7 @@ belong on both.
 | `src/rtc.h/.cpp` | SLM1302 3-wire RTC driver + UTC time service. Ported from the bring-up harness, not from the STM32. |
 | `src/counters.h/.cpp` | Earnings totals behind Live Counters. Own NVS namespace. |
 | `src/ble_diagnostics.cpp` | Diagnostics (`6a40f006`), read + notify, fault mailbox. |
-| `src/ble_command.cpp` | Command (`6a40f007`), write. A mailbox drained from `loop()` — never executes in the GATT callback. Physical ops refused unless `app_state_is_idle()`. |
+| `src/ble_command.cpp` | Command (`6a40f007`), write. A mailbox drained from `loop()` — never executes in the GATT callback. Physical ops refused unless `app_state_allows_physical_op()` (IDLE **or** TEST_MODE). Carries the app's 7 ops plus a provisional `0x08`–`0x0B` (`test_user_led`, `test_mode`, `test_coin_slot`, `test_button`). |
 | `src/ble_sessionlog.cpp` | Session Log (`6a40f004`), stateful write-cursor-then-read pagination. Cursor is per BLE connection. |
 | `src/eventlog.h/.cpp` | The event store behind it — **one row per paid period**, hooked at `coin_consume_value_cents()` (billing) and `APP_STATE_SESSION_END` (close). **Its own 128 KB flash partition** (`vendolog`, `partitions_vendo.csv`), not NVS — a ring of 8,192 rows wrapping oldest-first. |
 
@@ -197,15 +197,57 @@ BT1 is a CR2032 — non-rechargeable. Charging it can vent the cell, so this is 
 safety property, not a setting. Enabling it requires two deliberate macros and is
 a compile error otherwise.
 
-Still unbuilt: OTA (`f008`–`f00a`, `f00d`) and WiFi (`f00b`–`f00c`). Everything
-the app's sync sequence needs — `f001`–`f007` — exists as of 2026-09-15. See
-`docs/APP_BLE_PLAN.md`.
+Everything the app's sync sequence needs — `f001`–`f007` — exists as of
+2026-09-15. See `docs/APP_BLE_PLAN.md`.
 
-**One STM32-diffability note from `f007`:** `app.cpp` gained a single line,
-`app_publish_state(state)` at the top of the state machine loop, so other tasks
-can ask whether the board is vending. It is the only outward-facing state the
-app task exposes, and it exists because a BLE relay test during a paid session is
-a customer complaint. Nothing reads it from inside `app.cpp`.
+**4. `ENABLE_DIAG_BUTTON_BIT` is gated for the same reason `f001` is.** It adds
+bit 4 (user button) to Diagnostics' `sensors_bitmap`, so the app can *wait on* a
+button press rather than poll. `SensorBit` is the **app's** enum: a bit we claim
+that they later assign elsewhere does not error, it renders as whatever they made
+it mean — a button press showing up as a door opening. So it lives in
+`[env:esp32dev-devinfo]` (where it keeps compiling and nRF Connect can exercise
+it) and not in the default build, until `A14` allocates `SensorBit.button = 4`.
+The coin side needed no such thing: `f003` already notifies once per coin.
+
+Still unbuilt: OTA (`f008`–`f00a`, `f00d`) and WiFi (`f00b`–`f00c`).
+
+#### What `f007` cost `app.cpp`, and why none of it belongs on the STM32
+
+This is the one place the vend state machine diverged, so it is enumerated rather
+than left to a diff:
+
+| Addition | Why it is here and not upstream |
+|---|---|
+| `app_publish_state(state)`, one line at the top of the loop | The only outward-facing state the app task exposes. Nothing inside `app.cpp` reads it. Exists because a BLE relay test during a paid session is a customer complaint. |
+| `app_state_allows_physical_op()` | The gate that question actually needs: IDLE **or** TEST_MODE. `app_state_is_idle()` still means literally IDLE and still gates *entering* test mode. |
+| The `USER_LED` test blink, serviced in `APP_STATE_IDLE` | `PIN_USER_LED` is re-asserted every 20 ms by this task, so a blink driven from `loop()` is overwritten before anyone sees it. The pin's owner has to do it. |
+| **`APP_STATE_TEST_MODE`** and its request channel | A whole state, appended to the enum so no shared state renumbers. See below. |
+
+**`APP_STATE_TEST_MODE` is the largest S1-only divergence in `app.cpp`.** While in
+it the board performs no vend operation at all — coins start no session, START
+does nothing, Auto Start does not fire, the inactivity timeout does not run, the
+relay stays off. It exists so a technician can drive the board from the app while
+it holds still.
+
+Three properties are load-bearing, and the reason it is safe to have a state that
+deliberately disables the product:
+
+1. **Three independent exits, none removable.** The exit op, 60 s with no command,
+   and a BTN1+BTN2 long press. A board whose only exit is a command it can no
+   longer receive is a board stranded out of service in the field.
+2. **RAM-only.** Nothing about test mode is persisted, so a reboot always comes
+   back in normal operation — power-cycling is the first thing every technician
+   tries, and it must work.
+3. **Entering is refused unless the board is idle**, so it can never abandon a
+   session a customer paid for. Leaving is accepted from anywhere.
+
+The coin slot is inhibited on entry and reopened by op `0x0A`; pulses counted then
+are a snapshot subtraction, so **the banked money total is never touched**. Coins
+dropped during a test are therefore banked and honoured on exit — deliberate, and
+the right side of the never-discard invariant.
+
+**None of this belongs on the STM32.** It has no BLE, no app, and no
+`APP_STATE_TEST_MODE`; a change here does not belong on both sides.
 
 ### 2.5 I2C recovery: register pokes → driver-reported status
 
