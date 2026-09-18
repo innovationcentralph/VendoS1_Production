@@ -90,6 +90,17 @@ uint32_t coin_get_count();
 // Thread-safe reset to zero (both raw pulse count and money total).
 void     coin_reset();
 
+// ESP32-only, TEST MODE: while on, a debounced pulse still increments the raw
+// count (so app_test_pulses() and the LCD keep working) but is NOT banked as
+// credit and NOT recorded as earnings - it goes to counters_record_test_coin()
+// instead. A test coin is the technician's, not revenue, and a banked one
+// would be handed to the next real customer as free credit.
+//
+// Only the app task calls this, and ORDER MATTERS: turn it on before the slot
+// can open in test mode, and off BEFORE coin_slot_enable() on exit, or a real
+// customer's coin could land in the window and go unbilled.
+void     coin_set_test_capture(bool on);
+
 // --- Coin value (money) tracking — independent running total, in centavos ---
 // Set the price (centavos) applied to each NEW coin pulse from here on. Call
 // once after config_load() and again after any config-menu save, so a mid-run

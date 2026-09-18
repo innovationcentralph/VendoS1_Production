@@ -122,11 +122,19 @@ void app_request_user_led_test();
 // COINS: the slot is INHIBITED on entry (a machine that is out of service
 // should not take money), and app_request_test_coin_slot(true) turns it back on
 // for coin-path verification. Pulses counted then are reported by
-// app_test_pulses() — a count derived from a snapshot of coin_get_count(), so
-// it never touches the banked money total. Note the consequence: coins dropped
-// during a test ARE banked as real credit and are honoured on exit. That is
-// deliberate — the machine took the money, and discarding it would break the
-// never-discard invariant in CLAUDE.md. Use a returnable test coin.
+// app_test_pulses() (a snapshot diff of coin_get_count()) and, over BLE, as
+// Live Counters' trailing test_amount field.
+//
+// Coins dropped during a test are NOT banked as credit and NOT recorded as
+// earnings (changed 2026-09-19; the original design banked them and honoured
+// them on exit). coin_set_test_capture() diverts them: a test coin is the
+// technician's, a banked one was handed to the next real customer as free
+// credit, and it inflated lifetime/today takings and, once spent, the Session
+// Log the backend treats as revenue. The never-discard invariant in CLAUDE.md
+// is about CUSTOMER money, and there is no customer in test mode. Consequence
+// worth knowing: the physical coin still drops into the cash box, so the box
+// will hold more than the recorded takings until the technician takes their
+// test coins back out.
 // =============================================================================
 
 // How long with no command before test mode exits itself (user's decision,

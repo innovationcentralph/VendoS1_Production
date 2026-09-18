@@ -159,10 +159,24 @@ void counters_record_coin(uint32_t cents);
 // See the session definition above before moving this call site.
 void counters_record_session();
 
-// Serialises the 14-byte Live Counters frame (little-endian) exactly as
-// decodeLiveCounters() expects: today_amount u32 @0, today_sessions u16 @4,
-// lifetime_amount u32 @6, last_seq u32 @10.
-#define COUNTERS_WIRE_LEN 14
+// TEST MODE only: one pulse accepted while coin_set_test_capture() is on, worth
+// `cents`. Moves ONLY the test total below - never today/lifetime, never NVS.
+// A test coin is the technician's, not the operator's takings.
+void counters_record_test_coin(uint32_t cents);
+
+// Zero the test total. The app task calls this on test-mode entry, on every
+// coin-slot enable inside test mode, and on exit, so a stale total can never
+// be read as a coin from the current run.
+void counters_reset_test_amount();
+
+// Serialises the 18-byte Live Counters frame (little-endian): today_amount u32
+// @0, today_sessions u16 @4, lifetime_amount u32 @6, last_seq u32 @10,
+// test_amount u32 @14 (PESOS, RAM-only, 0 outside test mode).
+//
+// test_amount is APPENDED, never inserted: the app's decodeLiveCounters() reads
+// fixed offsets and ignores trailing bytes, so an app build from before the
+// field existed decodes the first 14 bytes exactly as before.
+#define COUNTERS_WIRE_LEN 18
 void counters_serialize(uint8_t out[COUNTERS_WIRE_LEN]);
 
 // True if anything changed since the last call — lets the BLE layer notify only
