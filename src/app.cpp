@@ -652,6 +652,13 @@ void app_task_run(void* arg) {
                 // immediately honour. app_request_test_coin_slot(true) re-opens
                 // it for coin-path verification.
                 coin_slot_disable();
+                // Test coins are the technician's, not revenue: from here until
+                // exit, a pulse is counted but never banked as credit or
+                // recorded as earnings (see coin_set_test_capture in periph.h).
+                // On while the slot is still inhibited, so no pulse can land
+                // before capture is active.
+                coin_set_test_capture(true);
+                counters_reset_test_amount();
                 s_test_pulse_base    = coin_get_count();
                 s_test_btn_presses   = 0;
                 s_test_btn_reset_req = false;
@@ -674,6 +681,7 @@ void app_task_run(void* arg) {
                 s_test_activity_tick = xTaskGetTickCount();
                 if (want) {
                     s_test_pulse_base = coin_get_count();
+                    counters_reset_test_amount();
                     coin_slot_enable();
                     Serial.println("[app] TEST MODE - coin slot ENABLED, counting from 0");
                 } else {
@@ -756,6 +764,11 @@ void app_task_run(void* arg) {
                 relay_off();
                 leds_set(false);
                 digitalWrite(PIN_USER_LED, LOW);
+                // Capture OFF strictly BEFORE the slot re-opens for customers.
+                // The other order leaves a window where a real customer's coin
+                // is counted as a test pulse and never billed.
+                coin_set_test_capture(false);
+                counters_reset_test_amount();
                 coin_slot_enable();
                 start_button_flush();
                 last_idle_money_cents = UINT32_MAX;   // force the idle screen back over the banner
