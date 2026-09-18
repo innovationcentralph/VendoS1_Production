@@ -77,9 +77,11 @@ void app_publish_state(AppState st);
 // APP_STATE_IDLE ("ready — press the button"), so a blink driven from any other
 // task is overwritten within 20 ms and the technician sees nothing. The pin's
 // owner has to do it, which is what this request is for. The app task services
-// it in IDLE only and clears it; nothing is queued, so a request that arrives
-// as a session starts is simply lost rather than replayed later — matching the
-// "dropped, not deferred" rule the BLE Command ops follow (src/ble_command.h).
+// it in IDLE and in TEST_MODE (the app runs its diagnostic checklist inside test
+// mode, so IDLE-only meant the op was accepted and never run) and clears it;
+// nothing is queued, so a request that arrives as a session starts is simply
+// lost rather than replayed later — matching the "dropped, not deferred" rule
+// the BLE Command ops follow (src/ble_command.h).
 void app_request_user_led_test();
 
 // =============================================================================

@@ -692,6 +692,26 @@ void app_task_run(void* arg) {
                 Serial.println("[app] TEST MODE - button count reset to 0");
             }
 
+            // test_user_led must be serviced HERE too, not only in IDLE. The BLE
+            // gate (app_state_allows_physical_op) accepts it in TEST_MODE, and the
+            // app runs its whole diagnostic checklist inside test mode - so before
+            // this, the request was accepted, never drained, and the lamp never
+            // blinked. Worse, the stale flag then fired on the first IDLE pass
+            // after exit, blinking the lamp with nobody watching. Same 5x100 ms
+            // pattern as IDLE; restored to LOW afterwards, since test mode parks
+            // the lamp off and has no "ready" meaning to restore.
+            if (s_user_led_test_req) {
+                s_user_led_test_req  = false;
+                s_test_activity_tick = xTaskGetTickCount();
+                Serial.println("[app] TEST MODE - USER_LED test, blinking the button lamp");
+                for (int i = 0; i < 5; ++i) {
+                    digitalWrite(PIN_USER_LED, HIGH);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    digitalWrite(PIN_USER_LED, LOW);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+            }
+
             // Always live, no op required - see app_request_test_button_reset()
             // in app.h. start_button_pressed() is the existing one-shot entry
             // point and deliberately does NOT auto-repeat, so a held button
