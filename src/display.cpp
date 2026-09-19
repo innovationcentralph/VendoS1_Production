@@ -92,6 +92,17 @@ static uint32_t          s_idle_credits      = 0;
 static uint32_t          s_idle_required     = 0;
 static bool              s_idle_is_auto      = false;  // true if the last idle screen shown was the OP_AUTO_START variant
 
+// Last TEST MODE screen, for the same heartbeat. Test mode only posts a frame
+// when its pulse or button count CHANGES, so a quiet stretch (a relay or
+// buzzer test, the technician deciding Yes/No) routinely passes 5 s with no
+// message. The heartbeat used to redraw IDLE unconditionally at that point,
+// wiping the TEST MODE banner off a board that was still out of service and
+// never putting it back. Set on DISP_TEST_MODE, cleared by any other screen.
+static bool              s_test_active       = false;
+static uint32_t          s_test_pulses       = 0;
+static bool              s_test_slot_on      = false;
+static uint32_t          s_test_presses      = 0;
+
 // =============================================================================
 // I2C bus recovery — called ONLY from display_task_run
 // =============================================================================
@@ -632,12 +643,26 @@ void display_task_run(void* arg) {
             // wrong screen.
             if (s_type == DISPLAY_LCD_16X2 && s_lcd_ok && s_lcd_started) {
                 lcd_reinit();
-                if (s_idle_is_auto) lcd_render_idle_auto(s_idle_credits, s_idle_required);
-                else                lcd_render_idle(s_idle_credits);
+                if (s_test_active)       lcd_render_test_mode(s_test_pulses, s_test_slot_on, s_test_presses);
+                else if (s_idle_is_auto) lcd_render_idle_auto(s_idle_credits, s_idle_required);
+                else                     lcd_render_idle(s_idle_credits);
             }
             continue;
         }
         if (s_type == DISPLAY_NONE) continue;
+
+        // Any screen other than TEST MODE means test mode is over (or never
+        // started), so the heartbeat must go back to redrawing idle. Tracked
+        // here, before the render switch, so it holds even when the LCD is
+        // down and the switch below is skipped.
+        if (msg.type == DISP_TEST_MODE) {
+            s_test_active  = true;
+            s_test_pulses  = msg.a;
+            s_test_slot_on = (msg.b != 0);
+            s_test_presses = msg.c;
+        } else {
+            s_test_active = false;
+        }
 
         // Lazy one-time init: Wire/LCD setup is deferred to the first message
         // because s_type is set by display_init() in the app task (after
