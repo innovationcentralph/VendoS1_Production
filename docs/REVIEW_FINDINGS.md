@@ -58,6 +58,7 @@ one-line fix is not yet safe to switch on.
 | R20 | LOW    | robust   | `coin_counter_init()`'s mutex creation is unchecked | `[ ]` |
 | R21 | LOW    | style    | `PIN_USER_LED` is written directly from `app.cpp` | `[ ]` |
 | R22 | MEDIUM | policy   | `ENABLE_CLI` on a field unit is a free-vend backdoor at J7 | `[ ]` |
+| R23 | HIGH   | money    | A reboot with an untrusted RTC zeroes today's earnings, and persists the zero | `[~]` |
 
 Build at time of review: **RAM 6.7%** (22 080 / 327 680 B), **Flash 24.1%**
 (315 961 / 1 310 720 B). There is no size pressure on this board — every
@@ -602,8 +603,41 @@ rather than a fix.
 
 ---
 
+## R23. [HIGH] A reboot with an untrusted RTC zeroes today's earnings, and persists the zero
+
+**Files:** `counters_roll_day_locked()` and `counters_init()` in `src/counters.cpp`
+(against `b416193`).
+
+**Reported from the field by the app team (2026-09-22): resetting the board sends
+"today" to ₱0.** Lifetime survives, which is what points at the day rollover rather
+than lost NVS.
+
+`counters_roll_day_locked()` compares `counters_business_day(rtc_now())` with the
+stored `today_day` and rolls over on *any* difference. When the RTC isn't trusted at
+boot (BT1 dead or not fitted, first power-up), `rtc_now()` returns 0, the current
+day comes back as `COUNTERS_DAY_UNKNOWN`, and it differs from the real day stored in
+the blob. So `counters_init()` zeroes `today_amount`/`today_sessions` and calls
+`counters_save_locked()` immediately. Time Sync (`f002`) arriving later cannot
+restore them, because the zero is already in NVS.
+
+`COUNTERS_DAY_UNKNOWN`'s own comment shows the discard was meant for takings
+recorded *before* any real day was known. Replacing a real stored day with UNKNOWN
+was never the intent: an unknown clock is not evidence that the day changed.
+
+**Fix (branch `fix/counters-unknown-day`):** return early from
+`counters_roll_day_locked()` when the current day is UNKNOWN. Coins taken while the
+clock is unknown keep accruing to the stored day, and the first valid time keeps them
+or rolls them over as usual. A *stored* UNKNOWN day still rolls over and discards,
+unchanged. The blob layout is untouched, so no version bump is needed.
+
+**Mitigated app-side meanwhile:** the app shows the higher of Live Counters' today and
+the backend's synced DailyStat. Session Log rows sit in `vendolog` and survive this.
+
+---
+
 ## Changelog
 
 | Date | Change |
 | --- | --- |
 | 2026-08-24 | First pass against `69260ad`. R1–R22 opened. |
+| 2026-09-22 | R23 opened (app team, from a field report) against `b416193`; fix on `fix/counters-unknown-day`. |
