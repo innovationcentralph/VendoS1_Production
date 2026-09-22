@@ -235,6 +235,13 @@ bool coin_raw_level() { return digitalRead(PIN_COIN_IN) == HIGH; }
 
 bool user_btn_raw_pressed() { return digitalRead(PIN_USER_BTN) == LOW; }
 
+// See coin_set_test_capture() in periph.h. One writer (app task), one reader
+// (the coin task, once per accepted pulse) - a plain volatile bool, same
+// discipline as s_published_state in app.cpp.
+static volatile bool s_coin_test_capture = false;
+
+void coin_set_test_capture(bool on) { s_coin_test_capture = on; }
+
 void coin_counter_task_run(void* arg) {
     (void)arg;
 
@@ -266,12 +273,26 @@ void coin_counter_task_run(void* arg) {
             case COIN_DEBOUNCE:
                 if (active) {
                     if (++db_samples >= DB_THRESHOLD) {
+                        // Read once, so one pulse is either wholly a test pulse
+                        // or wholly a billed one - never half of each.
+                        const bool test_pulse = s_coin_test_capture;
                         xSemaphoreTake(s_coin_mutex, portMAX_DELAY);
                         ++s_coin_count;
-                        s_coin_value_cents += s_price_per_credit_cents;
+                        if (!test_pulse) s_coin_value_cents += s_price_per_credit_cents;
                         const uint32_t total = s_coin_count;
                         const uint32_t billed = s_price_per_credit_cents;
                         xSemaphoreGive(s_coin_mutex);
+
+                        if (test_pulse) {
+                            // Not credit, not earnings: the app's coin-path test
+                            // reads this instead of lifetimeAmount. See
+                            // coin_set_test_capture() in periph.h.
+                            counters_record_test_coin(billed);
+                            DBG("[coin] TEST pulse, not banked, count=");
+                            DBGLN(total);
+                            state = COIN_ACTIVE_WAIT;
+                            break;
+                        }
 
                         // ESP32-only: operator earnings totals for the BLE Live
                         // Counters characteristic. No STM32 counterpart — see

@@ -26,6 +26,10 @@ static SemaphoreHandle_t s_lock     = nullptr;
 static bool              s_dirty    = false;   // for BLE notify
 static bool              s_unsaved  = false;   // for the NVS flush
 static uint32_t          s_last_change_ms = 0;
+// TEST MODE coin total, centavos. Deliberately NOT in CountersBlob: nothing
+// about a test run may be persisted, and keeping it out of the blob means the
+// NVS layout (and its flush) cannot pick it up by accident.
+static uint32_t          s_test_amount_cents = 0;
 
 // Day key meaning "the clock was not trustworthy when this was recorded".
 // Distinct from any real day, so the first valid timestamp rolls it over and
@@ -134,6 +138,23 @@ void counters_record_coin(uint32_t cents) {
     s_last_change_ms = millis();
 }
 
+void counters_record_test_coin(uint32_t cents) {
+    Lock lock;
+    if (!lock.held) return;
+    if (s_test_amount_cents > UINT32_MAX - cents) s_test_amount_cents = UINT32_MAX;
+    else                                          s_test_amount_cents += cents;
+    // Notify, but no s_unsaved: nothing here goes to NVS.
+    s_dirty = true;
+}
+
+void counters_reset_test_amount() {
+    Lock lock;
+    if (!lock.held) return;
+    if (s_test_amount_cents == 0) return;
+    s_test_amount_cents = 0;
+    s_dirty = true;
+}
+
 void counters_record_session() {
     Lock lock;
     if (!lock.held) return;
@@ -180,6 +201,7 @@ void counters_serialize(uint8_t out[COUNTERS_WIRE_LEN]) {
     put_u16(out, 4,  s_c.today_sessions);
     put_u32(out, 6,  s_c.lifetime_amount / 100u);
     put_u32(out, 10, s_c.last_seq);
+    put_u32(out, 14, s_test_amount_cents / 100u);
 }
 
 bool counters_take_dirty() {
