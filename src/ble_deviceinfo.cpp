@@ -1,7 +1,5 @@
 #include "ble_deviceinfo.h"
 
-#ifdef ENABLE_BLE_DEVICE_INFO
-
 #include "identity.h"
 #include "config.h"
 #include "version.h"
@@ -111,15 +109,5 @@ void ble_deviceinfo_register(NimBLEService* service) {
     s_char->setCallbacks(new DeviceInfoCallbacks());
     republish();    // seed a real value before the first connection
 
-    Serial.println("BLE: Device Info (f001) ENABLED — board will present as 'full'");
-    Serial.println("     to the app, which then requires f004 Session Log and f006");
-    Serial.println("     Diagnostics or the whole connect fails. See src/ble_deviceinfo.h.");
+    Serial.println("BLE: Device Info (f001) ENABLED — board presents as 'full' to the app");
 }
-
-#else  // !ENABLE_BLE_DEVICE_INFO
-
-void ble_deviceinfo_register(NimBLEService* service) {
-    (void)service;   // not built — see the header for why this is the default
-}
-
-#endif

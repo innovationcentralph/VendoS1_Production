@@ -311,7 +311,8 @@ Both of these are for your Diagnostics wizard, and they are not symmetric:
   reading a board that never sets it sees 0. Firmware is **built and gated** behind
   `-DENABLE_DIAG_BUTTON_BIT` — it sets the bit from the live button level and marks the
   frame dirty on each **edge**, so you get a notification per press and release rather than
-  having to poll. The flip is one line once you say yes.
+  having to poll. It is **already on** in the default build (2026-09-23), so please
+  confirm bit 4 — if you need a different bit, tell us and we'll move it.
 
 MTU: the app requests 247 but the contract requires firmware to still work at the default
 23, paging in smaller pages.

@@ -101,18 +101,13 @@ app team's to assign. `A4` stays open.
 
 ---
 
-# THE FLIP THAT IS NOW ONE APP-SIDE ITEM AWAY
+# f001 IS ON (2026-09-23)
 
-`ENABLE_BLE_DEVICE_INFO` is **still off**, and this is deliberate. Every
-characteristic the gate was waiting on now exists — `f002`, `f003`, `f004`,
-`f006`, `f007`. What remains is **`A7`, and it is not ours**: the app asserts
-`deviceInfo.deviceId === machine.deviceId` on every `full` connect, and a machine
-claimed before `f001` existed stored the BLE peripheral id (the MAC) there. The
-first board to report a real serial breaks every already-claimed machine in that
-install with "Connected to the wrong board."
-
-**Do not flip the flag to celebrate the bundle being finished.** Flip it when the
-app has the re-claim path, and not before.
+`f001` Device Info is always built — the flag and the `esp32dev-devinfo` env are
+gone, and an S1 always reads as `full`. Open app-side consequence, **`A7`**: the
+app asserts `deviceInfo.deviceId === machine.deviceId` on every `full` connect,
+and a machine claimed while the board was configOnly stored the BLE MAC there, so
+it fails with "Connected to the wrong board" until re-claimed.
 
 ---
 
@@ -159,14 +154,8 @@ Then run each operation mode on a board with a meter on the relay.
 ## Build state
 
 ```
-pio run -t upload                      # DEFAULT IS esp32dev-devinfo (f001 ON)
-pio run -e esp32dev -t upload          # app-safe build, no f001
+pio run -t upload                      # esp32dev — f001 always built, app sees 'full'
 ```
-
-⚠️ **The default is still the bench variant** (switched 2026-09-14 while nRF
-Connect is the only client). A board flashed from the default **cannot be used
-with the app at all**. Switch `default_envs` back to `esp32dev` in
-`platformio.ini` when app testing resumes.
 
 ⚠️ **This build changes the partition table.** `-t upload` flashes
 `partitions.bin` alongside the firmware, so a normal upload is enough — but a
@@ -255,9 +244,8 @@ pin 1; neither working points at the connector or Q1.
 
 ### Watching the coin and button over BLE, in nRF Connect
 
-Flash **`esp32dev-devinfo`** for this — the user-button bit is not in the default
-build (see `A14`). Re-flash `esp32dev` before any phone running the app touches
-that board: `devinfo` also exposes `f001`, which fails the app's connect outright.
+The default build includes the user-button bit (`-DENABLE_DIAG_BUTTON_BIT`;
+allocation still pending, `A14`).
 
 Connect to `VLABS-S1-<serial>` (or `VLABS-UNSET-xxxx`), service
 `6a400001-0000-1000-8000-00805f9b0001` — **not** `6a40f000`, which is the

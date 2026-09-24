@@ -274,17 +274,14 @@ and a mismatch is a silent misparse, not an error.
 
 **`f001` Device Info is a capability probe, not just data.** The app decides a
 board's entire profile on whether it exists: present means `full` and triggers a
-sync chain needing `f004` and `f006` too; absent means `configOnly`, which is why
-Config works today. Exposing it early makes the app's connect fail outright,
-**taking the working Config push with it**. It is therefore built but OFF —
-`pio run -e esp32dev-devinfo` for nRF Connect bench work, default env for
-anything the app will touch. **Every characteristic that gate was waiting on now
-exists** (`f002`, `f003`, `f004`, `f006`, `f007`, 2026-09-15). The flag stays out
-of `[env:esp32dev]` for one reason that is **not firmware's to fix**: the app
+sync chain needing `f002`, `f003`, `f004` and `f006` too; absent means
+`configOnly`. **It is always built (2026-09-23, user's decision) — there is no
+configOnly build any more**, and the `esp32dev-devinfo` env is gone. Removing any
+characteristic in that chain makes the app's connect fail outright, Config push
+included. Known app-side consequence (`A7`, not firmware's to fix): the app
 asserts `deviceInfo.deviceId === machine.deviceId` on every `full` connect, and
-machines claimed before `f001` existed stored the BLE MAC there. The first board
-to report a real serial breaks every already-claimed machine in that install.
-Flip it when the app has that re-claim path (`A7`), not before.
+machines claimed while the board was configOnly stored the BLE MAC there, so they
+fail with "Connected to the wrong board" until re-claimed.
 
 **`f007` Command has one rule worth knowing before touching it.** Its GATT
 callback is a *mailbox*, never an executor: the beep helpers block for hundreds

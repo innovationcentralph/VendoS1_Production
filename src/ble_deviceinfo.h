@@ -14,36 +14,26 @@
 // ceiling to design around and no padding to agree on.
 //
 // ---------------------------------------------------------------------------
-// ⚠️ THIS IS A CAPABILITY PROBE. SHIPPING IT ALONE BREAKS THE APP.
+// THIS IS A CAPABILITY PROBE — its presence makes the board "full".
 // ---------------------------------------------------------------------------
 //
 // BleService.resolveCapabilities() decides a board's whole profile on one test:
 //
 //     profile = uuids.includes(CHARACTERISTICS.deviceInfo) ? 'full' : 'configOnly'
 //
-// Today an S1 is 'configOnly'. The app skips its entire sync sequence and goes
-// straight to Config — which is exactly why Config works on a real board.
-//
-// The moment f001 appears the same board reads as 'full', and BleConnectionContext
-// runs the full chain instead:
+// Always built (2026-09-23), so an S1 is always 'full'. The app runs the full
+// chain on every connect:
 //
 //     writeTimeSync -> readDeviceInfo -> schema check -> readLiveCounters
 //       -> readConfig -> pullSessionLogDelta -> readDiagnostics -> readWifiStatus
 //
-// The first missing characteristic throws and the connect FAILS — taking the
-// Config push that works today down with it. So exposing Device Info on its own
-// is not an increment, it is a regression.
+// and the first missing characteristic throws, so f002/f003/f004/f006 must stay
+// registered alongside this one (readWifiStatus is caught by the app).
 //
-// f002 Time Sync and f003 Live Counters are already built. The remaining
-// prerequisites are **f004 Session Log** and **f006 Diagnostics**. Only when
-// those exist should this be switched on. (readWifiStatus is caught by the app,
-// so the WiFi set is not a blocker.)
-//
-// That is why this file is behind ENABLE_BLE_DEVICE_INFO, and why the flag is
-// OFF by default in platformio.ini. The hazard is a build-flag decision rather
-// than a comment somebody has to remember at flash time. Enable it for
-// nRF Connect testing — nRF talks to whatever GATT tree exists and has no
-// notion of profiles — and leave it off for any board the app will touch.
+// ⚠️ App-side hazard, APP_BLE_PLAN A7: on a `full` connect the app asserts
+// deviceInfo.deviceId === machine.deviceId. A machine claimed while the board
+// was configOnly stored the BLE MAC there, and fails with "Connected to the
+// wrong board" until it is re-claimed.
 //
 // See docs/APP_BLE_PLAN.md B1 and docs/BLE_CONFIG_CONTRACT.md.
 // ============================================================================
@@ -62,6 +52,5 @@
 #define BLE_MODULE_BIT_GSM       3
 
 // Creates the characteristic on an existing service. Call from
-// ble_config_init() before service->start(). No-op unless
-// ENABLE_BLE_DEVICE_INFO is defined.
+// ble_config_init() before service->start().
 void ble_deviceinfo_register(NimBLEService* service);

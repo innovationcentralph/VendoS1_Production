@@ -184,13 +184,12 @@ takings.
 A useful consequence: none of this needed a magic bump, so §2.4's divergence
 still stands alone and the hardware-verified 37-byte Config frame is untouched.
 
-**2. Device Info (`f001`) must not ship alone.** The mobile app decides a board's
-entire profile on whether that characteristic exists — present means `full` and
-triggers a sync chain that requires `f004` and `f006` too; absent means
-`configOnly`, which is why Config works today. Exposing it early makes the app's
-connect fail outright, taking the working Config push with it. Hence the separate
-`[env:esp32dev-devinfo]` PlatformIO environment rather than a flag in the default
-build. See `src/ble_deviceinfo.h`.
+**2. Device Info (`f001`) is always built, so the app sees an S1 as `full`.** The
+mobile app decides a board's entire profile on whether that characteristic exists
+— present means `full` and triggers a sync chain that requires `f002`–`f004` and
+`f006` too. It was gated behind a bench-only environment until the chain existed;
+since 2026-09-23 it is unconditional and the `esp32dev-devinfo` env is gone. See
+`src/ble_deviceinfo.h`.
 
 **3. Trickle charging is disabled in `rtc_init()` every boot, and read back.**
 BT1 is a CR2032 — non-rechargeable. Charging it can vent the cell, so this is a
@@ -200,13 +199,14 @@ a compile error otherwise.
 Everything the app's sync sequence needs — `f001`–`f007` — exists as of
 2026-09-15. See `docs/APP_BLE_PLAN.md`.
 
-**4. `ENABLE_DIAG_BUTTON_BIT` is gated for the same reason `f001` is.** It adds
+**4. `ENABLE_DIAG_BUTTON_BIT` is ON, but its bit is not yet allocated.** It adds
 bit 4 (user button) to Diagnostics' `sensors_bitmap`, so the app can *wait on* a
 button press rather than poll. `SensorBit` is the **app's** enum: a bit we claim
 that they later assign elsewhere does not error, it renders as whatever they made
-it mean — a button press showing up as a door opening. So it lives in
-`[env:esp32dev-devinfo]` (where it keeps compiling and nRF Connect can exercise
-it) and not in the default build, until `A14` allocates `SensorBit.button = 4`.
+it mean — a button press showing up as a door opening. It was
+bench-only until 2026-09-23, when it went into `[env:esp32dev]` to keep the
+default build identical to the old `esp32dev-devinfo` one. `A14` (allocate
+`SensorBit.button = 4`) is still open.
 The coin side needed no such thing: `f003` already notifies once per coin.
 
 Still unbuilt: OTA (`f008`–`f00a`, `f00d`) and WiFi (`f00b`–`f00c`).

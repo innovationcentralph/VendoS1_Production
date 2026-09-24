@@ -22,10 +22,9 @@
 // does that, driven off counters_take_dirty() rather than a timer, so an idle
 // board sends nothing and a busy one sends one frame per change.
 //
-// Adding f003 does NOT change the app's behaviour today: it decides 'full' vs
-// 'configOnly' purely on f001 Device Info, so a board exposing f003 alone stays
-// configOnly and the working Config flow is untouched. See src/ble_timesync.h
-// for the full sequencing constraint.
+// f003 is part of the app's 'full' sync chain (f001 Device Info is always
+// built, so an S1 is always 'full'). See src/ble_timesync.h for the sequencing
+// constraint.
 // ============================================================================
 
 #include <NimBLEDevice.h>

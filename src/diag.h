@@ -75,8 +75,9 @@
 // ---------------------------------------------------------------------------
 // Bit 4 = the user button (START, J1 pin 1). NOT ALLOCATED BY THE APP TEAM.
 // ---------------------------------------------------------------------------
-// Built and OFF by default, the same way ENABLE_BLE_DEVICE_INFO is, and for the
-// same reason: SensorBit is the APP's enum, and a bit we claim that they later
+// ON in [env:esp32dev] since 2026-09-23 (user's decision, to match the old
+// esp32dev-devinfo build) although still unallocated. The risk: SensorBit is
+// the APP's enum, and a bit we claim that they later
 // assign to something else does not error - it renders as whatever they made it
 // mean. A button press showing up as a door being opened is exactly the silent
 // misparse the allocation rule exists to prevent.
@@ -87,8 +88,8 @@
 // field, which cannot be appended to this frame at all - the fault list is
 // variable-length and terminal, so anything added after the header shifts it.
 //
-// When they say yes: move -DENABLE_DIAG_BUTTON_BIT into [env:esp32dev] and
-// delete this comment. See APP_BLE_PLAN A14.
+// If they allocate a different bit, change DIAG_SENSOR_BIT_BUTTON below. See
+// APP_BLE_PLAN A14.
 #ifdef ENABLE_DIAG_BUTTON_BIT
 #define DIAG_SENSOR_BIT_BUTTON    4
 #endif

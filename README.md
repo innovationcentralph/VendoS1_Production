@@ -204,18 +204,11 @@ Service `6a400001-0000-1000-8000-00805f9b0001`:
 Full byte layouts and the complete UUID allocation are in
 `docs/BLE_CONFIG_CONTRACT.md`.
 
-> ⚠️ **Device Info is deliberately not in the default build.** The mobile app
-> decides a board's whole profile on whether `f001` exists: present means "full"
-> and triggers a sync chain that also needs `f004`, `f006` and `f007`; absent
-> means "config only", which is why Config works today. **Every characteristic
-> that chain needs now exists** (`f002`, `f003`, `f004`, `f006`, `f007`). What
-> still holds the flag off is app-side: a board reporting a real serial breaks
-> every machine claimed before Device Info existed, which needs a re-claim path
-> in the app first (`A7` in `docs/APP_BLE_PLAN.md`).
->
-> Build `-e esp32dev-devinfo` to expose it for nRF Connect bench testing, which
-> has no notion of app profiles. Use the default `-e esp32dev` for any board the
-> app will touch.
+> **Device Info (`f001`) is always built**, so the mobile app always sees an S1 as
+> "full" and runs its sync chain (`f002`, `f003`, `f004`, `f006`, `f007`). A
+> machine claimed in the app while the board was still "config only" stored the
+> BLE MAC as its id and fails with "Connected to the wrong board" until it is
+> re-claimed (`A7` in `docs/APP_BLE_PLAN.md`).
 
 ## Design notes
 
