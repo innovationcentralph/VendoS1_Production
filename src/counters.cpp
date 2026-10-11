@@ -41,13 +41,41 @@ static uint32_t          s_test_amount_cents = 0;
 // counters_roll_day_locked() for why that used to wipe today_* on reboot.
 #define COUNTERS_DAY_UNKNOWN 0u
 
+// TEMPORARY (R24/R25 diagnosis): records who holds the mutex and since when,
+// so a failed acquire can name the holder instead of leaving us guessing.
+static const char* s_lock_owner    = "none";
+static uint32_t    s_lock_taken_ms = 0;
+
+static const char* s_lock_site = "none";
+
 struct Lock {
     bool held;
-    Lock() : held(false) {
+    const char* prev_site;
+    explicit Lock(const char* site = "?") : held(false), prev_site(s_lock_site) {
         if (s_lock) held = (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) == pdTRUE);
+        if (held) {
+            s_lock_owner    = pcTaskGetName(nullptr);
+            s_lock_taken_ms = millis();
+            s_lock_site     = site;
+        }
     }
-    ~Lock() { if (held) xSemaphoreGive(s_lock); }
+    ~Lock() {
+        if (held) { s_lock_owner = "none"; s_lock_site = prev_site; xSemaphoreGive(s_lock); }
+    }
 };
+
+static void counters_report_lock_holder(const char* who) {
+    Serial.print("counters: ");
+    Serial.print(who);
+    Serial.print(" blocked - holder=");
+    Serial.print(s_lock_owner);
+    Serial.print(" at ");
+    Serial.print(s_lock_site);
+    Serial.print(" for ");
+    Serial.print((uint32_t)(millis() - s_lock_taken_ms));
+    Serial.print("ms, caller task=");
+    Serial.println(pcTaskGetName(nullptr));
+}
 
 // ============================================================================
 // Business day
@@ -83,6 +111,73 @@ static void counters_load_locked() {
     s_c = stored;
 }
 
+// Writes a snapshot to NVS. Takes NO lock, and MUST NOT be called with one
+// held - that was R25.
+//
+// The flash write is the single long operation in this module: a few
+// milliseconds normally, far longer when NVS has to compact or erase a page.
+// Holding the mutex across it starved every other counters entry point, each
+// of which gives up after 100 ms and returns in silence - including
+// counters_record_coin(), where giving up means a customer's money is never
+// recorded. Snapshot in, write out, and the long hold disappears.
+static bool counters_write_blob(const CountersBlob& blob) {
+    Preferences prefs;
+    if (!prefs.begin(COUNTERS_NS, /*readOnly=*/false)) {
+        diag_raise(DIAG_ERR_NVS_WRITE);
+        return false;
+    }
+    const size_t n = prefs.putBytes(COUNTERS_KEY, &blob, sizeof(blob));
+    prefs.end();
+
+    // The result was previously discarded. A silently failing flush is the
+    // nastiest of the NVS failures: the board keeps counting correctly in RAM
+    // and loses it at every reboot, so lifetime takings appear to go BACKWARDS
+    // - and that figure is the operator's meter reading against cash in the box.
+    if (n != sizeof(blob)) {
+        diag_raise(DIAG_ERR_NVS_WRITE);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Flush, safely, from a caller that is NOT holding the lock.
+ *
+ * Copies the blob under the lock, writes it outside, then clears the dirty
+ * flag only if nothing changed while the write was in flight. If something
+ * did - a coin landed mid-write - the flag stays set and the next service
+ * tick writes again, which costs one extra flush and never loses the coin.
+ */
+static void counters_flush_unlocked() {
+    CountersBlob snapshot;
+    uint32_t     change_marker;
+    {
+        Lock lock("flush_snapshot");
+        if (!lock.held) return;        // try again next tick
+        snapshot      = s_c;
+        change_marker = s_last_change_ms;
+    }
+
+    if (!counters_write_blob(snapshot)) return;   // stay dirty, retry later
+
+    Lock lock;
+    if (!lock.held) return;            // the flag is only an optimisation
+    if (s_last_change_ms == change_marker) s_unsaved = false;
+}
+
+/**
+ * Flush from a caller that already holds the lock.
+ *
+ * Still writes flash under the mutex, so it still has R25's starvation
+ * window - but only two callers remain and both are rare: the day rollover
+ * (once a day) and an operator-confirmed earnings reset. The routine flush,
+ * which runs seconds after every coin and was the real source of the
+ * contention, now goes through counters_flush_unlocked() instead.
+ *
+ * Worth closing properly if either becomes hot. Not worth restructuring the
+ * day-boundary write today: that one wants to be durable before anything else
+ * happens, and it is the moment a day's total becomes final.
+ */
 static void counters_save_locked() {
     Preferences prefs;
     if (!prefs.begin(COUNTERS_NS, /*readOnly=*/false)) {
@@ -132,7 +227,7 @@ static void counters_roll_day_locked() {
 // ============================================================================
 
 void counters_record_coin(uint32_t cents) {
-    Lock lock;
+    Lock lock("record_coin");
     if (!lock.held) return;
     counters_roll_day_locked();
 
@@ -152,7 +247,7 @@ void counters_record_coin(uint32_t cents) {
 }
 
 void counters_record_test_coin(uint32_t cents) {
-    Lock lock;
+    Lock lock("record_test_coin");
     if (!lock.held) return;
     if (s_test_amount_cents > UINT32_MAX - cents) s_test_amount_cents = UINT32_MAX;
     else                                          s_test_amount_cents += cents;
@@ -161,7 +256,7 @@ void counters_record_test_coin(uint32_t cents) {
 }
 
 void counters_reset_test_amount() {
-    Lock lock;
+    Lock lock("reset_test_amount");
     if (!lock.held) return;
     if (s_test_amount_cents == 0) return;
     s_test_amount_cents = 0;
@@ -169,7 +264,7 @@ void counters_reset_test_amount() {
 }
 
 void counters_record_session() {
-    Lock lock;
+    Lock lock("record_session");
     if (!lock.held) return;
     counters_roll_day_locked();
     // One paid period, not one relay edge and not one pulse — see counters.h.
@@ -204,8 +299,20 @@ void counters_reset_earnings() {
 }
 
 void counters_set_last_seq(uint32_t seq) {
-    Lock lock;
-    if (!lock.held) return;
+    Lock lock("set_last_seq");
+    if (!lock.held) {
+        // Never silent. This is the seq floor that stops an erased log from
+        // reissuing ids the backend has already filed (see eventlog_init), so
+        // a missed update is a money-record hazard, not a dropped statistic.
+        // R24 was invisible for exactly this reason.
+        Serial.print("counters: set_last_seq(");
+        Serial.print(seq);
+        Serial.println(") FAILED - could not take the lock, seq floor not advanced");
+        counters_report_lock_holder("set_last_seq");
+        return;
+    }
+    // TEMPORARY (R24 diagnosis): confirms the call lands and with what value.
+    Serial.print("counters: last_seq <- "); Serial.println(seq);
     s_c.last_seq     = seq;
     s_dirty          = true;
     s_unsaved        = true;
@@ -242,31 +349,33 @@ void counters_serialize(uint8_t out[COUNTERS_WIRE_LEN]) {
 }
 
 bool counters_take_dirty() {
-    Lock lock;
+    Lock lock("take_dirty");
     if (!lock.held) return false;
     const bool d = s_dirty;
     s_dirty = false;
     return d;
 }
 
-uint32_t counters_today_amount()    { Lock l; return s_c.today_amount; }
-uint16_t counters_today_sessions()  { Lock l; return s_c.today_sessions; }
-uint32_t counters_lifetime_amount() { Lock l; return s_c.lifetime_amount; }
-uint32_t counters_last_seq()        { Lock l; return s_c.last_seq; }
+uint32_t counters_today_amount()    { Lock l("today_amount"); return s_c.today_amount; }
+uint16_t counters_today_sessions()  { Lock l("today_sessions"); return s_c.today_sessions; }
+uint32_t counters_lifetime_amount() { Lock l("lifetime_amount"); return s_c.lifetime_amount; }
+uint32_t counters_last_seq()        { Lock l("last_seq"); return s_c.last_seq; }
 
 // ============================================================================
 // Service + init
 // ============================================================================
 
 void counters_service() {
-    Lock lock;
-    if (!lock.held) return;
-
-    counters_roll_day_locked();
-
-    if (s_unsaved && (uint32_t)(millis() - s_last_change_ms) >= COUNTERS_FLUSH_IDLE_MS) {
-        counters_save_locked();
+    bool due = false;
+    {
+        Lock lock("service");
+        if (!lock.held) return;
+        counters_roll_day_locked();
+        due = s_unsaved && (uint32_t)(millis() - s_last_change_ms) >= COUNTERS_FLUSH_IDLE_MS;
     }
+    // Deliberately outside the lock - see counters_write_blob(). This is the
+    // routine flush, and it used to be the one that starved the coin path.
+    if (due) counters_flush_unlocked();
 }
 
 void counters_init() {
