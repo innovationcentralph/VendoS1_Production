@@ -179,6 +179,30 @@ void counters_record_session() {
     s_last_change_ms = millis();
 }
 
+void counters_reset_earnings() {
+    Lock lock;
+    if (!lock.held) return;
+
+    s_c.today_amount    = 0;
+    s_c.today_sessions  = 0;
+    s_c.lifetime_amount = 0;
+    // today_day is left alone on purpose: we are still inside the same business
+    // day, now with nothing taken in it. Clearing it to DAY_UNKNOWN would make
+    // the next coin look like the start of a new day and re-trigger a rollover.
+    //
+    // last_seq is left alone too - see counters.h for why rewinding it would
+    // corrupt delta sync and the event log's numbering.
+
+    s_dirty          = true;
+    s_unsaved        = true;
+    s_last_change_ms = millis();
+    // Straight to NVS rather than the debounced flush, so a power cut right
+    // after the operator confirmed cannot bring the old totals back.
+    counters_save_locked();
+
+    Serial.println("counters: earnings reset to zero (today + lifetime)");
+}
+
 void counters_set_last_seq(uint32_t seq) {
     Lock lock;
     if (!lock.held) return;

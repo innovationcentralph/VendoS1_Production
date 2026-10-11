@@ -271,12 +271,27 @@ Taken from `codec.ts`, little-endian, so these need no further negotiation:
   | `0x09` | `testMode` | `1` enter / `0` leave | Suspends **all** vend operation. Enter refused unless idle; leave always accepted. |
   | `0x0A` | `testCoinSlot` | `1` on / `0` off | Coin slot during test mode (inhibited on entry). Enabling restarts the pulse count at 0. Refused outside test mode. |
   | `0x0B` | `testButton` | — | Re-zeroes the user-button press count. Refused outside test mode. |
+  | `0x0C` | `resetEarnings` | **must be `0x52455345`** | Zeroes `today_amount`, `today_sessions` and `lifetime_amount`, saved to NVS immediately. Refused during a session, and refused outright on any other param. Does **not** touch config, and does **not** rewind `last_seq`. Added 2026-10-11 at the app team's request. |
 
   > ⚠️ **These are the next sequential codes, which makes them the obvious choices for
   > `reboot` too.** A collision on `0x09` would not be cosmetic — an app command would take a
   > machine **out of service**. Please allocate the block, or give us four different codes.
 
   Notes the app should know:
+  - **`resetEarnings` destroys money records, so it is deliberately awkward to fire by accident.**
+    Every other op takes param `0` or `1`; a truncated, misaligned or replayed frame carrying
+    `0x0C` with a zero param is a realistic way to wipe a machine's lifetime takings. It therefore
+    requires the exact confirm value `0x52455345` ("RESE") and refuses anything else. It is also
+    gated on an idle board for a different reason from the physical ops: coins may be counted but
+    not yet banked mid-session, and zeroing underneath that loses money already taken.
+    `last_seq` is untouched on purpose — rewinding it would corrupt delta sync and mint duplicate
+    sequence numbers against the records still in the `vendolog` partition. The app is expected to
+    clear its own records for the machine on the same confirmation; firmware has no way to know
+    whether it did.
+  - **Resetting config is a different operation.** `resetEarnings` leaves `AppConfig` alone. An
+    operator clearing last month's takings is not asking for their coin price and relay timing to
+    change underneath them. The app can reset settings by writing a defaults frame to Config
+    (`f005`) — no new op is needed, and none has been added.
   - **Physical ops are refused while a session is running** (`identify`, `testRelay`, `testBuzzer`,
     `testLed`). A relay click mid-vend is a customer complaint. `syncAck`, `clearErrors` and
     `wifiForget` run at any time — refusing a `syncAck` mid-vend would fail a connect for no reason.

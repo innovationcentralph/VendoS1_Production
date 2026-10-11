@@ -122,6 +122,30 @@
 // code. ALSO PROVISIONAL.
 #define CMD_OP_TEST_BUTTON   0x0B
 
+// Zero this machine's takings - today_amount, today_sessions and
+// lifetime_amount - persisted immediately. `param` MUST be the magic
+// CMD_RESET_EARNINGS_CONFIRM; any other value is refused.
+//
+// First code outside the provisional 0x08-0x0B block, so it does not depend on
+// A13 being settled. Requested by the app team (2026-10-11) for a per-machine
+// "reset data" action, where the app clears its own records for the machine on
+// the same confirmation.
+//
+// THE MAGIC PARAM IS NOT CEREMONY. Every other op here takes param 0 or 1, so
+// a truncated, misaligned or stale frame that happens to carry this op code
+// with a zero param is a realistic way to wipe a machine's lifetime takings by
+// accident. Requiring a specific 32-bit value means a malformed write cannot
+// do it - it has to be meant.
+//
+// Refused during a session (see op_is_destructive): coins can be mid-flight,
+// and zeroing the totals underneath a vend in progress loses money that has
+// already been taken.
+//
+// Does NOT reset AppConfig, and does NOT rewind last_seq. See
+// counters_reset_earnings() for why the sequence number has to stay monotonic.
+#define CMD_OP_RESET_EARNINGS 0x0C
+#define CMD_RESET_EARNINGS_CONFIRM 0x52455345u  // "RESE", little-endian on the wire
+
 // How long testRelay energises the relay. Long enough for a technician to hear
 // the click and see the load twitch, short enough that it cannot be mistaken
 // for a vend or dispense anything worth money.
