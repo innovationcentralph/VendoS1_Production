@@ -35,6 +35,10 @@ static uint32_t          s_test_amount_cents = 0;
 // Distinct from any real day, so the first valid timestamp rolls it over and
 // discards takings that could not be attributed to a real business day. Lifetime
 // is unaffected — that one is always meaningful.
+//
+// It is only ever STORED when no real day was known yet (a fresh blob). An
+// untrusted clock after that never replaces a real stored day — see
+// counters_roll_day_locked() for why that used to wipe today_* on reboot.
 #define COUNTERS_DAY_UNKNOWN 0u
 
 struct Lock {
@@ -102,6 +106,15 @@ static void counters_save_locked() {
 // Rolls today_* over if the business day has moved on. Caller holds the lock.
 static void counters_roll_day_locked() {
     const uint32_t day = counters_business_day(rtc_now());
+    // An untrusted clock is not evidence that the day changed. Without this,
+    // any boot where the RTC isn't trusted (dead or missing BT1, first power-up)
+    // read the current day as UNKNOWN, saw it differ from the stored real day,
+    // and zeroed today_* AND persisted the zero at once — wiping the operator's
+    // takings on every power blip. Coins taken meanwhile keep accruing to the
+    // stored day; the first valid time then keeps or rolls them as usual.
+    // A stored day that is itself UNKNOWN still rolls over on the first valid
+    // time, discarding unattributable takings exactly as before.
+    if (day == COUNTERS_DAY_UNKNOWN) return;
     if (day == s_c.today_day) return;
 
     // A day boundary is worth persisting immediately: it is the one moment the
@@ -164,6 +177,30 @@ void counters_record_session() {
     s_dirty          = true;
     s_unsaved        = true;
     s_last_change_ms = millis();
+}
+
+void counters_reset_earnings() {
+    Lock lock;
+    if (!lock.held) return;
+
+    s_c.today_amount    = 0;
+    s_c.today_sessions  = 0;
+    s_c.lifetime_amount = 0;
+    // today_day is left alone on purpose: we are still inside the same business
+    // day, now with nothing taken in it. Clearing it to DAY_UNKNOWN would make
+    // the next coin look like the start of a new day and re-trigger a rollover.
+    //
+    // last_seq is left alone too - see counters.h for why rewinding it would
+    // corrupt delta sync and the event log's numbering.
+
+    s_dirty          = true;
+    s_unsaved        = true;
+    s_last_change_ms = millis();
+    // Straight to NVS rather than the debounced flush, so a power cut right
+    // after the operator confirmed cannot bring the old totals back.
+    counters_save_locked();
+
+    Serial.println("counters: earnings reset to zero (today + lifetime)");
 }
 
 void counters_set_last_seq(uint32_t seq) {

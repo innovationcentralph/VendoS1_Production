@@ -99,7 +99,7 @@ solved at scan time with no characteristic involved.
 | A1 | — | app | ~~Re-key `Machine.deviceId`~~ — closed by `D11` for the *backend fleet*. **Partially reopened 2026-09-14 as `A7`** for per-install app records | — | `[x]` |
 | A2 | P3 | app | Empty states for `configOnly` machines on earnings surfaces | support load | `[ ]` |
 | A3 | P3 | app | Polarity confirmation in the Diagnostics wizard (needs B4) | — | `[ ]` |
-| A4 | P3 | app | Reboot button (needs B6) | — | `[ ]` |
+| A4 | P3 | app | Reboot button (needs B6). **`0x0C` is no longer free** — taken by `resetEarnings` and `0x0D` by `resetConfig`, both on 2026-10-11. Use `0x0E`. | — | `[ ]` |
 | A5 | — | app | ~~UUID allocation table~~ — **closed 2026-09-14 by reading `mobile/src/ble/constants.ts`.** Full table recorded in `BLE_CONFIG_CONTRACT.md`. Device Info is `f001`, Time Sync `f002`, Live Counters `f003`, Session Log `f004`, Diagnostics `f006`, Command `f007`, OTA/WiFi `f008`–`f00d` | — | `[x]` |
 | A6 | **P1** | app | Two one-line app-side fixes found in their source: `findBoardByDeviceId()` still requires `name === 'VENDOS1'` (reconnect *fallback* only — primary connect-by-id path is fine), and a re-claim/migration path is needed before `B1` ships (see `A7`) | reconnect retry | `[ ]` |
 | A7 | **P0** | app | **`machine.deviceId` re-key after all.** `A1` was closed on "no backend fleet", but the app asserts `deviceInfo.deviceId !== machine.deviceId` and an S1 claimed today stores the *BLE peripheral id* there. Every already-claimed machine breaks with "Connected to the wrong board" the moment `B1` reports a real serial | B1 | `[ ]` |
