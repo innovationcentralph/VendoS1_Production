@@ -22,6 +22,18 @@ struct CountersBlob {
 };
 
 static CountersBlob      s_c        = {};
+// The seq floor, kept OUTSIDE the mutex on purpose.
+//
+// It is written from the event-log append path, which runs in loop() and must
+// never block - and taking this module's mutex there is what left the floor
+// stuck at 0 on real hardware (R24), with the knock-on that an erased log
+// could reissue sequence numbers the backend had already filed.
+//
+// A naturally-aligned 32-bit store is atomic on this core, there is exactly
+// one writer (the append path) and the readers only ever want the latest
+// value, so a mutex buys nothing here. The blob below keeps a copy purely so
+// the value survives a reboot; it is refreshed from this on every flush.
+static volatile uint32_t s_floor_seq = 0;
 static SemaphoreHandle_t s_lock     = nullptr;
 static bool              s_dirty    = false;   // for BLE notify
 static bool              s_unsaved  = false;   // for the NVS flush
@@ -41,41 +53,13 @@ static uint32_t          s_test_amount_cents = 0;
 // counters_roll_day_locked() for why that used to wipe today_* on reboot.
 #define COUNTERS_DAY_UNKNOWN 0u
 
-// TEMPORARY (R24/R25 diagnosis): records who holds the mutex and since when,
-// so a failed acquire can name the holder instead of leaving us guessing.
-static const char* s_lock_owner    = "none";
-static uint32_t    s_lock_taken_ms = 0;
-
-static const char* s_lock_site = "none";
-
 struct Lock {
     bool held;
-    const char* prev_site;
-    explicit Lock(const char* site = "?") : held(false), prev_site(s_lock_site) {
+    Lock() : held(false) {
         if (s_lock) held = (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) == pdTRUE);
-        if (held) {
-            s_lock_owner    = pcTaskGetName(nullptr);
-            s_lock_taken_ms = millis();
-            s_lock_site     = site;
-        }
     }
-    ~Lock() {
-        if (held) { s_lock_owner = "none"; s_lock_site = prev_site; xSemaphoreGive(s_lock); }
-    }
+    ~Lock() { if (held) xSemaphoreGive(s_lock); }
 };
-
-static void counters_report_lock_holder(const char* who) {
-    Serial.print("counters: ");
-    Serial.print(who);
-    Serial.print(" blocked - holder=");
-    Serial.print(s_lock_owner);
-    Serial.print(" at ");
-    Serial.print(s_lock_site);
-    Serial.print(" for ");
-    Serial.print((uint32_t)(millis() - s_lock_taken_ms));
-    Serial.print("ms, caller task=");
-    Serial.println(pcTaskGetName(nullptr));
-}
 
 // ============================================================================
 // Business day
@@ -109,6 +93,10 @@ static void counters_load_locked() {
     // takings is not.
     if (n != sizeof(stored) || stored.version != COUNTERS_BLOB_VERSION) return;
     s_c = stored;
+    // Seed the live floor from the blob. This is the whole reason the blob
+    // still carries last_seq: the floor has to survive a reboot, or an erased
+    // log would restart at seq 1 over ids the backend already holds.
+    s_floor_seq = s_c.last_seq;
 }
 
 // Writes a snapshot to NVS. Takes NO lock, and MUST NOT be called with one
@@ -152,8 +140,9 @@ static void counters_flush_unlocked() {
     CountersBlob snapshot;
     uint32_t     change_marker;
     {
-        Lock lock("flush_snapshot");
+        Lock lock;
         if (!lock.held) return;        // try again next tick
+        s_c.last_seq  = s_floor_seq;   // the blob only carries it across reboots
         snapshot      = s_c;
         change_marker = s_last_change_ms;
     }
@@ -179,6 +168,7 @@ static void counters_flush_unlocked() {
  * happens, and it is the moment a day's total becomes final.
  */
 static void counters_save_locked() {
+    s_c.last_seq = s_floor_seq;   // see s_floor_seq
     Preferences prefs;
     if (!prefs.begin(COUNTERS_NS, /*readOnly=*/false)) {
         diag_raise(DIAG_ERR_NVS_WRITE);
@@ -227,7 +217,7 @@ static void counters_roll_day_locked() {
 // ============================================================================
 
 void counters_record_coin(uint32_t cents) {
-    Lock lock("record_coin");
+    Lock lock;
     if (!lock.held) return;
     counters_roll_day_locked();
 
@@ -247,7 +237,7 @@ void counters_record_coin(uint32_t cents) {
 }
 
 void counters_record_test_coin(uint32_t cents) {
-    Lock lock("record_test_coin");
+    Lock lock;
     if (!lock.held) return;
     if (s_test_amount_cents > UINT32_MAX - cents) s_test_amount_cents = UINT32_MAX;
     else                                          s_test_amount_cents += cents;
@@ -256,7 +246,7 @@ void counters_record_test_coin(uint32_t cents) {
 }
 
 void counters_reset_test_amount() {
-    Lock lock("reset_test_amount");
+    Lock lock;
     if (!lock.held) return;
     if (s_test_amount_cents == 0) return;
     s_test_amount_cents = 0;
@@ -264,7 +254,7 @@ void counters_reset_test_amount() {
 }
 
 void counters_record_session() {
-    Lock lock("record_session");
+    Lock lock;
     if (!lock.held) return;
     counters_roll_day_locked();
     // One paid period, not one relay edge and not one pulse — see counters.h.
@@ -299,21 +289,14 @@ void counters_reset_earnings() {
 }
 
 void counters_set_last_seq(uint32_t seq) {
-    Lock lock("set_last_seq");
-    if (!lock.held) {
-        // Never silent. This is the seq floor that stops an erased log from
-        // reissuing ids the backend has already filed (see eventlog_init), so
-        // a missed update is a money-record hazard, not a dropped statistic.
-        // R24 was invisible for exactly this reason.
-        Serial.print("counters: set_last_seq(");
-        Serial.print(seq);
-        Serial.println(") FAILED - could not take the lock, seq floor not advanced");
-        counters_report_lock_holder("set_last_seq");
-        return;
-    }
-    // TEMPORARY (R24 diagnosis): confirms the call lands and with what value.
-    Serial.print("counters: last_seq <- "); Serial.println(seq);
-    s_c.last_seq     = seq;
+    // No lock. See s_floor_seq: this is called from the event-log append in
+    // loop(), where blocking is not acceptable, and taking the mutex here is
+    // what made R24 invisible - the acquire timed out and the function
+    // returned in silence, so the floor never moved.
+    s_floor_seq = seq;
+
+    // Racy by design: the worst case is one extra flush, and both flags are
+    // only hints that something changed.
     s_dirty          = true;
     s_unsaved        = true;
     s_last_change_ms = millis();
@@ -344,22 +327,22 @@ void counters_serialize(uint8_t out[COUNTERS_WIRE_LEN]) {
     put_u32(out, 0,  s_c.today_amount / 100u);
     put_u16(out, 4,  s_c.today_sessions);
     put_u32(out, 6,  s_c.lifetime_amount / 100u);
-    put_u32(out, 10, s_c.last_seq);
+    put_u32(out, 10, s_floor_seq);
     put_u32(out, 14, s_test_amount_cents / 100u);
 }
 
 bool counters_take_dirty() {
-    Lock lock("take_dirty");
+    Lock lock;
     if (!lock.held) return false;
     const bool d = s_dirty;
     s_dirty = false;
     return d;
 }
 
-uint32_t counters_today_amount()    { Lock l("today_amount"); return s_c.today_amount; }
-uint16_t counters_today_sessions()  { Lock l("today_sessions"); return s_c.today_sessions; }
-uint32_t counters_lifetime_amount() { Lock l("lifetime_amount"); return s_c.lifetime_amount; }
-uint32_t counters_last_seq()        { Lock l("last_seq"); return s_c.last_seq; }
+uint32_t counters_today_amount()    { Lock l; return s_c.today_amount; }
+uint16_t counters_today_sessions()  { Lock l; return s_c.today_sessions; }
+uint32_t counters_lifetime_amount() { Lock l; return s_c.lifetime_amount; }
+uint32_t counters_last_seq()        { return s_floor_seq; }   // see s_floor_seq
 
 // ============================================================================
 // Service + init
@@ -368,7 +351,7 @@ uint32_t counters_last_seq()        { Lock l("last_seq"); return s_c.last_seq; }
 void counters_service() {
     bool due = false;
     {
-        Lock lock("service");
+        Lock lock;
         if (!lock.held) return;
         counters_roll_day_locked();
         due = s_unsaved && (uint32_t)(millis() - s_last_change_ms) >= COUNTERS_FLUSH_IDLE_MS;

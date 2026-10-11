@@ -362,17 +362,44 @@ void eventlog_record_session() {
     if (xQueueSend(s_queue, &p, 0) != pdTRUE) {
         ++s_dropped;
         diag_raise(DIAG_ERR_NVS_WRITE);
+        Serial.println("eventlog: QUEUE SEND FAILED - row dropped");
     }
 }
 
 void eventlog_service() {
-    if (s_part == nullptr || s_queue == nullptr) return;
+    if (s_part == nullptr || s_queue == nullptr) {
+        // Said once rather than returning in silence: with no partition or no
+        // queue, nothing is ever recorded and nothing else reports it.
+        static bool told = false;
+        if (!told) {
+            told = true;
+            Serial.print("eventlog: service DISABLED - part=");
+            Serial.print(s_part == nullptr ? "NULL" : "ok");
+            Serial.print(" queue=");
+            Serial.println(s_queue == nullptr ? "NULL" : "ok");
+        }
+        return;
+    }
 
     PendingSession p;
     while (xQueuePeek(s_queue, &p, 0) == pdTRUE) {
         Lock lock;
-        if (!lock.held) return;                    // try again next tick
-        if (!write_one_locked(p)) return;          // keep it queued, retry later
+        if (!lock.held) {
+            // Rate-limited: this fires every tick while the mutex is held, and
+            // a flood of identical lines is its own kind of silence. Kept at
+            // all because a queue that stops draining loses sales with no
+            // other symptom - that was R26, and it went unnoticed for hours.
+            static uint32_t last_warn_ms = 0;
+            if ((uint32_t)(millis() - last_warn_ms) >= 5000) {
+                last_warn_ms = millis();
+                Serial.println("eventlog: WARNING - cannot take the lock, sessions are not being written");
+            }
+            return;                                // try again next tick
+        }
+        if (!write_one_locked(p)) {
+            Serial.println("eventlog: write_one_locked FAILED - row stays queued");
+            return;                                // keep it queued, retry later
+        }
         xQueueReceive(s_queue, &p, 0);             // consume only once written
     }
 }
