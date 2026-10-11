@@ -50,6 +50,7 @@ static const char* op_name(uint8_t op) {
         case CMD_OP_TEST_COIN_SLOT: return "test_coin_slot";
         case CMD_OP_TEST_BUTTON:   return "test_button";
         case CMD_OP_RESET_EARNINGS: return "reset_earnings";
+        case CMD_OP_RESET_CONFIG:   return "reset_config";
         default:                  return "unknown";
     }
 }
@@ -72,7 +73,7 @@ static bool op_is_physical(uint8_t op) {
 // money records, and a session in progress may have coins already counted and
 // not yet banked. Same idle requirement, different reason.
 static bool op_is_destructive(uint8_t op) {
-    return op == CMD_OP_RESET_EARNINGS;
+    return op == CMD_OP_RESET_EARNINGS || op == CMD_OP_RESET_CONFIG;
 }
 
 static bool op_has_own_gate(uint8_t op) {
@@ -135,6 +136,23 @@ static void execute(const PendingCommand& c) {
             }
             counters_reset_earnings();
             Serial.println("BLE reset_earnings - today and lifetime takings zeroed");
+            break;
+
+        case CMD_OP_RESET_CONFIG:
+            if (c.param != CMD_RESET_CONFIG_CONFIRM) {
+                Serial.print("BLE reset_config REFUSED - bad confirm param 0x");
+                Serial.println(c.param, HEX);
+                break;
+            }
+            {
+                AppConfig defaults;
+                config_defaults(&defaults);
+                config_save(&defaults);
+            }
+            // Same caveat as every other config write, and the reason the CLI
+            // prints it too: the running app task is still using the old
+            // values until a reset.
+            Serial.println("BLE reset_config - factory defaults saved; reset to apply");
             break;
 
         case CMD_OP_CLEAR_ERRORS:

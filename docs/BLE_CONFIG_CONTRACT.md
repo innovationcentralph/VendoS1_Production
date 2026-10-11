@@ -272,6 +272,7 @@ Taken from `codec.ts`, little-endian, so these need no further negotiation:
   | `0x0A` | `testCoinSlot` | `1` on / `0` off | Coin slot during test mode (inhibited on entry). Enabling restarts the pulse count at 0. Refused outside test mode. |
   | `0x0B` | `testButton` | — | Re-zeroes the user-button press count. Refused outside test mode. |
   | `0x0C` | `resetEarnings` | **must be `0x52455345`** | Zeroes `today_amount`, `today_sessions` and `lifetime_amount`, saved to NVS immediately. Refused during a session, and refused outright on any other param. Does **not** touch config, and does **not** rewind `last_seq`. Added 2026-10-11 at the app team's request. |
+  | `0x0D` | `resetConfig` | **must be `0x43464721`** | Restores `AppConfig` to the firmware's own factory defaults, saved immediately. Needs a reset to take effect, like every config write except `coin_active_high`. Does **not** touch earnings. Added 2026-10-11. |
 
   > ⚠️ **These are the next sequential codes, which makes them the obvious choices for
   > `reboot` too.** A collision on `0x09` would not be cosmetic — an app command would take a
