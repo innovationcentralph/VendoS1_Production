@@ -1,6 +1,7 @@
 #include "wifi_sta.h"
 
 #include "diag.h"
+#include "display.h"
 
 #include <Preferences.h>
 #include <WiFi.h>
@@ -58,6 +59,11 @@ static void start_attempt() {
     // (core 0, see CLAUDE.md's task layout). Polled in wifi_service().
     WiFi.begin(s_ssid, s_pass);
 
+    // Said on the LCD, not just the serial port. An attempt takes up to 20 s,
+    // and a blank screen for that long is how an operator decides the board is
+    // dead and pulls the plug partway through.
+    display_show_notice(NOTICE_WIFI_CONNECTING);
+
     Serial.print("WiFi:   connecting to \"");
     Serial.print(s_ssid);
     Serial.println("\"");
@@ -104,6 +110,7 @@ void wifi_service() {
     if (s_state == WIFI_STATE_CONNECTING) {
         if (WiFi.status() == WL_CONNECTED) {
             s_state = WIFI_STATE_CONNECTED;
+            display_show_notice(NOTICE_WIFI_CONNECTED);
             Serial.print("WiFi:   connected — ");
             Serial.println(WiFi.localIP().toString());
             return;
@@ -112,7 +119,15 @@ void wifi_service() {
             s_state           = WIFI_STATE_FAILED;
             s_last_failure_ms = now;
             s_begun           = false;
-            WiFi.disconnect(/*wifioff=*/true);
+
+            // Disconnect WITHOUT powering the radio down. wifioff=true made
+            // the stack log "timeout when WiFi un-init, type=4" on every
+            // failed attempt — it tears the driver down and brings it back a
+            // minute later for the retry, which is both slower and noisier
+            // than simply dropping the association.
+            WiFi.disconnect(/*wifioff=*/false);
+
+            display_show_notice(NOTICE_WIFI_FAILED);
             Serial.println("WiFi:   could not connect — wrong password, or the network is out of range");
             Serial.println("        retrying in a minute; BLE is unaffected");
         }

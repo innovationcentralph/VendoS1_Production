@@ -125,10 +125,9 @@ void ble_wifi_service() {
         s_last_state = state;
         s_last_ip    = ip;
         publish_status(true);
-
-        // Worth saying on the LCD too: "did it work?" is the whole question
-        // being asked while someone stands there typing a password in.
-        if (state == WIFI_STATE_CONNECTED)   display_show_notice(NOTICE_WIFI_CONNECTED);
-        else if (state == WIFI_STATE_FAILED) display_show_notice(NOTICE_WIFI_FAILED);
+        // LCD notices are NOT raised here. wifi_sta.cpp owns the state and
+        // raises them at the transitions themselves, so a board with no BLE
+        // build, or one connecting at boot with no phone anywhere near it,
+        // still says what it is doing on the screen in front of it.
     }
 }

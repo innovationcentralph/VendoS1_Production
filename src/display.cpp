@@ -538,7 +538,11 @@ static void lcd_render_notice(uint8_t notice) {
         case NOTICE_DEFAULTS_RESTORED: row0 = "SETTINGS RESET";  row1 = "defaults loaded";break;
         case NOTICE_CLOCK_SET:         row0 = "CLOCK SET";       row1 = "";               break;
         // The operator is usually standing there having just typed a password,
-        // and "did that work?" is the only thing they want to know.
+        // and "did that work?" is the only thing they want to know. The
+        // attempt itself takes up to 20 s, which is far too long to leave the
+        // screen saying nothing — that silence is exactly when someone decides
+        // the board is broken and power-cycles it mid-attempt.
+        case NOTICE_WIFI_CONNECTING:   row0 = "WIFI";            row1 = "connecting...";  break;
         case NOTICE_WIFI_CONNECTED:    row0 = "WIFI CONNECTED";  row1 = "";               break;
         case NOTICE_WIFI_FAILED:       row0 = "WIFI FAILED";     row1 = "check password"; break;
         default:                       row0 = "";                row1 = "";               break;
