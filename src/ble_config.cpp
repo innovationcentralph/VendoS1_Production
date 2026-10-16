@@ -299,6 +299,20 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 void ble_config_init() {
     build_device_name();
     NimBLEDevice::init(s_device_name);
+
+    // Ask for the largest ATT MTU the spec allows (2026-10-16). NimBLE's
+    // default preference is 255, which is what every client had been settling
+    // on, and the app then chunks firmware at MTU minus overhead.
+    //
+    // This is the OTA transfer rate, measured on real hardware: a phone pushing
+    // 686 KB managed 8.0 KB/s at a 239-byte chunk — about 29 ms per chunk,
+    // against an ~11 ms connection interval at high priority. The radio is not
+    // the limit; the per-chunk round trip is, so halving the NUMBER of chunks
+    // is the lever that matters. 517 gives ~509-byte chunks.
+    //
+    // Costs nothing when a client asks for less: MTU is negotiated to the
+    // smaller of the two, so older phones and the config path are unaffected.
+    NimBLEDevice::setMTU(517);
     NimBLEServer* server = NimBLEDevice::createServer();
     s_server = server;
     server->setCallbacks(new ServerCallbacks());
