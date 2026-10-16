@@ -1,6 +1,7 @@
 #include "checkin.h"
 
 #include "backend_ca.h"
+#include "diag.h"
 #include "eventlog.h"
 #include "identity.h"
 #include "version.h"
@@ -21,7 +22,8 @@
 #define CHECKIN_BASE_URL "https://app-api.vendolabsph.com"
 #endif
 
-#define CHECKIN_INTERVAL_MS   60000    // a minute between successful check-ins
+#define CHECKIN_INTERVAL_MS   60000    // heartbeat cadence when nothing has happened
+#define CHECKIN_TICK_MS        2000    // how soon a new vend can be noticed
 #define CHECKIN_IDLE_POLL_MS   5000    // re-check preconditions this often
 #define CHECKIN_HTTP_TIMEOUT  15000
 
@@ -88,8 +90,46 @@ static uint32_t build_payload(char* buf, size_t cap, size_t* out_len) {
     len += snprintf(buf + len, cap - len, "{\"firmwareVersion\":\"%s\"", FW_VERSION_FULL);
 
     if (have_now) {
+        // Sensors and faults ride the heartbeat, not just uptime.
+        //
+        // A WiFi-only board was reporting one number — how long it had been
+        // powered — while a board on Bluetooth showed its coin path, its
+        // clock and any active faults. That makes WiFi a worse way to watch a
+        // machine than standing next to it, which is the opposite of the
+        // point. The backend's heartbeat already accepts both.
+        //
+        // The wire frame is diag.h's: uptime u32, boot_ts u32,
+        // boot_ts_unverified u8, sensors u8, errors_count u8, then the codes.
+        uint8_t diag[DIAG_WIRE_MAX];
+        const size_t diag_len = diag_serialize(diag, sizeof(diag));
+        const bool have_diag = diag_len >= DIAG_WIRE_HEADER_LEN;
+
         len += snprintf(buf + len, cap - len,
-            ",\"heartbeat\":{\"ts\":\"%s\",\"uptime\":%lu}", now, (unsigned long)(millis() / 1000));
+            ",\"heartbeat\":{\"ts\":\"%s\",\"uptime\":%lu", now, (unsigned long)(millis() / 1000));
+
+        if (have_diag) {
+            const uint8_t sensors = diag[9];
+            // Key names are the app team's and are what the status card
+            // renders: door / vibration / coin / rtc. `vibration` is sent as
+            // false rather than omitted, because this board has one generic
+            // sensor input and claiming a second would imply monitoring it
+            // cannot do — see diag.h.
+            len += snprintf(buf + len, cap - len,
+                ",\"sensors\":{\"door\":%s,\"vibration\":false,\"coin\":%s,\"rtc\":%s}",
+                (sensors & (1u << DIAG_SENSOR_BIT_DOOR)) ? "true" : "false",
+                (sensors & (1u << DIAG_SENSOR_BIT_COIN)) ? "true" : "false",
+                (sensors & (1u << DIAG_SENSOR_BIT_RTC))  ? "true" : "false");
+
+            const uint8_t errs = diag[10];
+            len += snprintf(buf + len, cap - len, ",\"errors\":[");
+            for (uint8_t i = 0; i < errs && (DIAG_WIRE_HEADER_LEN + i) < diag_len; ++i) {
+                len += snprintf(buf + len, cap - len, "%s%u",
+                                i == 0 ? "" : ",", (unsigned)diag[DIAG_WIRE_HEADER_LEN + i]);
+            }
+            len += snprintf(buf + len, cap - len, "]");
+        }
+
+        len += snprintf(buf + len, cap - len, "}");
     }
 
     uint8_t page[EVENTLOG_PAGE_MAX_LEN];
@@ -174,6 +214,8 @@ static void checkin_once() {
 
 static void checkin_task(void* arg) {
     (void)arg;
+    uint32_t last_attempt_ms = 0;
+
     for (;;) {
         // Every precondition is re-checked each pass rather than latched: WiFi
         // comes and goes, and a board can be provisioned or forgotten at any
@@ -185,8 +227,30 @@ static void checkin_task(void* arg) {
             vTaskDelay(pdMS_TO_TICKS(CHECKIN_IDLE_POLL_MS));
             continue;
         }
-        checkin_once();
-        vTaskDelay(pdMS_TO_TICKS(CHECKIN_INTERVAL_MS));
+
+        // Money does not wait for the timer.
+        //
+        // A minute between check-ins is fine for "is this board alive" and
+        // badly wrong for "a customer just paid": over Bluetooth a vend shows
+        // up the moment it happens, and a WiFi board that took up to a minute
+        // to say the same thing felt broken by comparison. So the loop ticks
+        // at CHECKIN_TICK_MS and goes early whenever the log has rows the
+        // backend has not seen.
+        //
+        // Deliberately polled from here rather than signalled by the vend
+        // path: eventlog_last_seq() is one mutex take, app.cpp is kept
+        // diffable against the STM32 (see CLAUDE.md), and nothing in the
+        // money path should gain a dependency on the network.
+        const uint32_t now = millis();
+        const bool have_news = eventlog_last_seq() > s_acked_seq;
+        const bool due       = (uint32_t)(now - last_attempt_ms) >= CHECKIN_INTERVAL_MS;
+
+        if (have_news || due || last_attempt_ms == 0) {
+            last_attempt_ms = now;
+            checkin_once();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(CHECKIN_TICK_MS));
     }
 }
 
