@@ -7,6 +7,7 @@
 #include "ble_diagnostics.h"
 #include "ble_sessionlog.h"
 #include "ble_command.h"
+#include "ble_ota.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -57,6 +58,7 @@ static void build_device_name() {
 #define CFG_WIRE_VERSION  1
 
 static NimBLECharacteristic* s_configChar = nullptr;
+static NimBLEServer*         s_server     = nullptr;   // for ble_config_is_reachable()
 
 // Same "read stored config, or fall back to defaults" shape cli.cpp keeps as
 // a local static helper — three lines, duplicated rather than shared, same
@@ -287,6 +289,7 @@ void ble_config_init() {
     build_device_name();
     NimBLEDevice::init(s_device_name);
     NimBLEServer* server = NimBLEDevice::createServer();
+    s_server = server;
     server->setCallbacks(new ServerCallbacks());
     NimBLEService* service = server->createService(BLE_SERVICE_UUID);
 
@@ -305,6 +308,7 @@ void ble_config_init() {
     ble_sessionlog_register(service);
     ble_diagnostics_register(service);
     ble_command_register(service);
+    ble_ota_register(service);
 
     service->start();
 
@@ -343,4 +347,17 @@ void ble_config_init() {
     if (!identity_serial_valid()) {
         Serial.println("  (name suffix is the MAC — this board is UNPROVISIONED, see AT+SERIAL?)");
     }
+}
+
+// See ble_config.h. Advertising OR connected both mean "a phone can get to
+// this board": NimBLEServer stops advertising while a connection is up (it
+// restarts on disconnect, see onDisconnect above), so checking advertising
+// alone would read a healthy connected board as unreachable - and on an OTA
+// boot the phone that just pushed the image is usually still connected, which
+// is exactly when that misread would matter.
+bool ble_config_is_reachable() {
+    if (!NimBLEDevice::getInitialized()) return false;
+    if (s_server != nullptr && s_server->getConnectedCount() > 0) return true;
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    return adv != nullptr && adv->isAdvertising();
 }

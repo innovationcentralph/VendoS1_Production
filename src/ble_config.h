@@ -17,3 +17,12 @@
 // advertising immediately — see docs/BLE_CONFIG_CONTRACT.md for how to
 // connect and exercise this with nRF Connect.
 void ble_config_init();
+
+// Can a phone get to this board right now — advertising, or already connected?
+//
+// Added for the OTA rollback guard (src/ota_guard.h), which confirms a freshly
+// flashed image only once this is true: BLE is the way back in, so an image
+// that cannot advertise must not be kept. Deliberately asks the stack rather
+// than trusting a flag set at init — the question is whether the board is
+// reachable now, not whether startAdvertising() once returned.
+bool ble_config_is_reachable();
