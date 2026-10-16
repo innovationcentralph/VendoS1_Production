@@ -727,6 +727,15 @@ void display_task_run(void* arg) {
             // bus error. Re-render whichever idle variant was last shown (plain
             // vs OP_AUTO_START) so this heartbeat does not flicker back to the
             // wrong screen.
+            // The heartbeat restores IDLE, so whatever was on screen before is
+            // gone and the screen is no longer busy. Without this, s_screen_busy
+            // is only ever cleared by a NEW message: a board that last posted
+            // DONE, DENIED or a config page and then went quiet shows idle while
+            // still counting as busy, and silently drops every notice from then
+            // on. Test mode is the exception - it is a sticky screen that the
+            // heartbeat deliberately keeps, and it really is busy.
+            if (!s_test_active) s_screen_busy = false;
+
             if (s_type == DISPLAY_LCD_16X2 && s_lcd_ok && s_lcd_started) {
                 lcd_reinit();
                 if (s_test_active)       lcd_render_test_mode(s_test_pulses, s_test_slot_on, s_test_presses);
