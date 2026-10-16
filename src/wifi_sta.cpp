@@ -108,6 +108,21 @@ void wifi_service() {
     const uint32_t now = millis();
 
     if (s_state == WIFI_STATE_CONNECTING) {
+        // Keep the message on screen for the whole attempt.
+        //
+        // A notice holds for 2.5 s and an attempt takes 20, so the LCD showed
+        // "connecting" for a moment and then went back to idle for seventeen
+        // seconds before saying it failed — which reads as nothing happening
+        // at all, which is exactly what it was added to prevent. Re-raising it
+        // keeps it up without needing a second kind of sticky screen, and it
+        // still yields to a vend: the display task drops notices whenever a
+        // session or config page is showing.
+        static uint32_t last_nudge_ms = 0;
+        if ((uint32_t)(now - last_nudge_ms) >= 2000) {
+            last_nudge_ms = now;
+            display_show_notice(NOTICE_WIFI_CONNECTING);
+        }
+
         if (WiFi.status() == WL_CONNECTED) {
             s_state = WIFI_STATE_CONNECTED;
             display_show_notice(NOTICE_WIFI_CONNECTED);
@@ -128,7 +143,14 @@ void wifi_service() {
             WiFi.disconnect(/*wifioff=*/false);
 
             display_show_notice(NOTICE_WIFI_FAILED);
-            Serial.println("WiFi:   could not connect — wrong password, or the network is out of range");
+            Serial.println("WiFi:   could not connect to that network");
+            // 2.4 GHz first, because it is the one that cannot be fixed by
+            // retyping anything: this chip has no 5 GHz radio, and a router
+            // advertising one SSID across both bands looks to an operator like
+            // a network the board is simply refusing to join.
+            Serial.println("        - this board is 2.4 GHz ONLY; it cannot see a 5 GHz network");
+            Serial.println("        - check the password");
+            Serial.println("        - check the network reaches the machine");
             Serial.println("        retrying in a minute; BLE is unaffected");
         }
         return;
