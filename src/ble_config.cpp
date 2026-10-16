@@ -8,6 +8,7 @@
 #include "ble_sessionlog.h"
 #include "ble_command.h"
 #include "ble_ota.h"
+#include "ble_wifi.h"
 #include "display.h"
 #include "periph.h"
 #include <Arduino.h>
@@ -334,6 +335,7 @@ void ble_config_init() {
     ble_diagnostics_register(service);
     ble_command_register(service);
     ble_ota_register(service);
+    ble_wifi_register(service);
 
     service->start();
 

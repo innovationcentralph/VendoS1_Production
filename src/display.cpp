@@ -537,6 +537,10 @@ static void lcd_render_notice(uint8_t notice) {
         case NOTICE_EARNINGS_RESET:    row0 = "EARNINGS RESET";  row1 = "totals cleared"; break;
         case NOTICE_DEFAULTS_RESTORED: row0 = "SETTINGS RESET";  row1 = "defaults loaded";break;
         case NOTICE_CLOCK_SET:         row0 = "CLOCK SET";       row1 = "";               break;
+        // The operator is usually standing there having just typed a password,
+        // and "did that work?" is the only thing they want to know.
+        case NOTICE_WIFI_CONNECTED:    row0 = "WIFI CONNECTED";  row1 = "";               break;
+        case NOTICE_WIFI_FAILED:       row0 = "WIFI FAILED";     row1 = "check password"; break;
         default:                       row0 = "";                row1 = "";               break;
     }
     lcd_row_centered(0, row0);

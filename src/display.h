@@ -149,6 +149,8 @@ typedef enum : uint8_t {
     NOTICE_EARNINGS_RESET,
     NOTICE_DEFAULTS_RESTORED,
     NOTICE_CLOCK_SET,
+    NOTICE_WIFI_CONNECTED,
+    NOTICE_WIFI_FAILED,
 } DisplayNotice;
 
 void display_show_notice(DisplayNotice notice);
