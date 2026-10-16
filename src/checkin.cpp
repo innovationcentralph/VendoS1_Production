@@ -145,13 +145,20 @@ static uint32_t build_payload(char* buf, size_t cap, size_t* out_len, uint8_t* o
     // own history and the board's counter (mobile/src/utils/earnings.ts) —
     // this is the half it could not see unless a phone was connected.
     //
-    // Pesos, like the BLE Live Counters wire. NOT centavos: the app does not
-    // divide by 100 on either path, and making one of them differ is how the
-    // same machine reports ten times its takings on one screen.
+    // /100 IS THE CENTAVOS->PESOS BOUNDARY, exactly as counters_serialize()
+    // does it for the BLE wire. The accessors return CENTAVOS; the wire — both
+    // wires — is PESOS, and the app divides by 100 on neither path.
+    //
+    // Sending the raw accessor put "Lifetime ₱2100" on screen for a board
+    // holding ₱21.00. Caught on hardware the same day as the ₱10.00 default
+    // coin price that made a ₱5 coin read as ₱50; money bugs here are always
+    // factors of 100 and never look like errors, they look like a good day.
+    //
+    // Exact, because price-per-pulse is always a whole number of pesos.
     len += snprintf(buf + len, cap - len,
         ",\"counters\":{\"today\":%lu,\"lifetime\":%lu,\"todaySessions\":%u}",
-        (unsigned long)counters_today_amount(),
-        (unsigned long)counters_lifetime_amount(),
+        (unsigned long)(counters_today_amount() / 100u),
+        (unsigned long)(counters_lifetime_amount() / 100u),
         (unsigned)counters_today_sessions());
 
     uint8_t page[EVENTLOG_PAGE_MAX_LEN];
