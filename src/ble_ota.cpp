@@ -391,10 +391,6 @@ void ble_ota_service() {
     publish_status(true);
 }
 
-bool ble_ota_in_progress() {
-    return s_state == OTA_STATE_RECEIVING || s_state == OTA_STATE_VERIFYING;
-}
-
 void ble_ota_print_status(Stream& out) {
     static const char* const names[] = { "idle", "receiving", "verifying", "done", "error" };
     out.print("ota_transfer = ");
