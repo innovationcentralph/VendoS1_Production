@@ -1,6 +1,7 @@
 #include "checkin.h"
 
 #include "backend_ca.h"
+#include "counters.h"
 #include "diag.h"
 #include "eventlog.h"
 #include "identity.h"
@@ -79,7 +80,10 @@ static size_t append_session(char* buf, size_t cap, size_t len, const uint8_t* r
 }
 
 // Builds the body and returns the highest seq it contains (0 if none).
-static uint32_t build_payload(char* buf, size_t cap, size_t* out_len) {
+// `out_rows` receives how many session rows went in — which is NOT derivable
+// from the seq range, because the log is a ring and the seqs it no longer
+// holds are still counted by the range.
+static uint32_t build_payload(char* buf, size_t cap, size_t* out_len, uint8_t* out_rows) {
     char serial[IDENTITY_SERIAL_BUF];
     if (!identity_serial_get(serial)) serial[0] = '\0';
 
@@ -132,6 +136,24 @@ static uint32_t build_payload(char* buf, size_t cap, size_t* out_len) {
         len += snprintf(buf + len, cap - len, "}");
     }
 
+    // The board's own totals.
+    //
+    // Not derivable from the sessions in this payload: the event log is a ring
+    // and wraps, so a board that has been running for months has long since
+    // dropped the rows the early money came from, while `vendocnt` has
+    // counted all of it. The server already knows to take the higher of its
+    // own history and the board's counter (mobile/src/utils/earnings.ts) —
+    // this is the half it could not see unless a phone was connected.
+    //
+    // Pesos, like the BLE Live Counters wire. NOT centavos: the app does not
+    // divide by 100 on either path, and making one of them differ is how the
+    // same machine reports ten times its takings on one screen.
+    len += snprintf(buf + len, cap - len,
+        ",\"counters\":{\"today\":%lu,\"lifetime\":%lu,\"todaySessions\":%u}",
+        (unsigned long)counters_today_amount(),
+        (unsigned long)counters_lifetime_amount(),
+        (unsigned)counters_today_sessions());
+
     uint8_t page[EVENTLOG_PAGE_MAX_LEN];
     const size_t page_len = eventlog_build_page(s_acked_seq, page);
     const uint8_t count = (page_len >= 2) ? page[0] : 0;
@@ -150,7 +172,8 @@ static uint32_t build_payload(char* buf, size_t cap, size_t* out_len) {
     }
 
     len += snprintf(buf + len, cap - len, "}");
-    *out_len = len;
+    *out_len  = len;
+    *out_rows = count;
     return highest;
 }
 
@@ -164,8 +187,9 @@ static void checkin_once() {
     // snprintf is bounded regardless, so the worst case is a truncated body
     // the server rejects, not a smashed stack.
     static char body[2048];
-    size_t len = 0;
-    const uint32_t highest = build_payload(body, sizeof(body), &len);
+    size_t  len       = 0;
+    uint8_t sent_rows = 0;
+    const uint32_t highest = build_payload(body, sizeof(body), &len, &sent_rows);
 
     WiFiClientSecure client;
     // Authenticates the server. See backend_ca.h for why this is not
@@ -192,7 +216,11 @@ static void checkin_once() {
         // The response carries a pending config and possibly a firmware URL.
         // Both are deliberately ignored for now — see checkin.h.
         if (highest > s_acked_seq) {
-            s_sent_total += (highest - s_acked_seq);
+            // Counted from the page, not from the seq gap. The gap includes
+            // every seq the log no longer holds - on the first check-in after
+            // a pointer reset that read as 44 sessions sent when a handful of
+            // rows had gone.
+            s_sent_total += sent_rows;
             s_acked_seq = highest;
         }
         s_last_ok_ms = millis();
