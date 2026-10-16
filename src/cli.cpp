@@ -14,6 +14,7 @@
 #include "version.h"
 #include "ota_guard.h"
 #include "wifi_sta.h"
+#include "checkin.h"
 #include <esp_system.h>
 #include <string.h>
 #include <ctype.h>
@@ -68,6 +69,12 @@ static void cmd_version(const char* args, Stream& out) {
     out.print("firmware_version = "); out.println(FW_VERSION_FULL);
     out.print("build_epoch = ");      out.println((uint32_t)FW_BUILD_EPOCH);
     out.println("OK");
+}
+
+// AT+CHECKIN?  — whether the board is reporting to the backend, and when it last did
+static void cmd_checkin_status(const char* args, Stream& out) {
+    (void)args;
+    checkin_print_status(out);
 }
 
 // AT+WIFI?  — connection state, SSID, IP, and whether a backend key is stored
@@ -889,6 +896,7 @@ static const CliCommand kCommands[] = {
     { "AT+VERSION?",     "Report firmware version",                              cmd_version     },
     { "AT+OTA?",         "Report OTA slot, image state and trial status",        cmd_ota_status  },
     { "AT+WIFI?",        "WiFi state, SSID, IP and whether check-ins are enabled",  cmd_wifi_status },
+    { "AT+CHECKIN?",     "Backend check-in state - last result, acked seq",        cmd_checkin_status },
     { "AT+EEPROM_RESET", "Overwrite stored config with factory defaults",        cmd_eeprom_reset},
     { "AT+EEPROM?",      "Dump raw stored bytes + all parsed config fields",     cmd_eeprom_dump },
     { "AT+CFG?",         "Show parsed config (relay time, beeps, etc.)",         cmd_cfg_show    },

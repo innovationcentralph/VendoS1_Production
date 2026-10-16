@@ -13,6 +13,7 @@
 #include "version.h"
 #include "ota_guard.h"
 #include "wifi_sta.h"
+#include "checkin.h"
 #ifdef ENABLE_CLI
 #include "cli.h"
 #endif
@@ -210,6 +211,11 @@ void setup() {
     // no-op on a board that has never been given credentials, which is every
     // board today.
     wifi_init();
+
+    // After wifi_init() and identity: it reports as this board, over that
+    // link. Creates one task that sleeps until both exist, so an
+    // unprovisioned board pays for a task control block and nothing else.
+    checkin_init();
 
     // Last, because its self-test asks whether BLE is reachable and whether the
     // app task is checking in — both of which have to exist first. On an
