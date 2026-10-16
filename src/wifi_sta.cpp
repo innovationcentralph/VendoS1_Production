@@ -78,9 +78,20 @@ void wifi_init() {
     // explicitly told to forget.
     WiFi.persistent(false);
 
-    // The board cannot sleep its radio between check-ins and still answer a
-    // phone promptly, and the power budget here is a mains adapter.
-    WiFi.setSleep(false);
+    // DO NOT call WiFi.setSleep(false) here.
+    //
+    // It looks right on a mains-powered board — keep the radio awake, answer
+    // promptly — and it bricks the boot when BLE is also running:
+    //
+    //   E (1937) wifi: Error! Should enable WiFi modem sleep when both WiFi
+    //   and Bluetooth are enabled!!!!!!
+    //
+    // ...followed by a reboot loop. WiFi and BLE share one radio on this chip,
+    // and the coexistence arbiter needs the WiFi side to yield time slots;
+    // modem sleep is how it does that. Leaving the default on is not a power
+    // optimisation here, it is what makes the two coexist at all.
+    //
+    // Found on hardware 2026-10-16, on the first provisioning attempt.
 
     start_attempt();
 }
@@ -153,8 +164,7 @@ bool wifi_provision(const char* ssid, const char* password, const char* device_k
     strncpy(s_devkey, device_key ? device_key : "", sizeof(s_devkey) - 1);
     s_devkey[sizeof(s_devkey) - 1] = '\0';
 
-    WiFi.persistent(false);
-    WiFi.setSleep(false);
+    WiFi.persistent(false);   // see wifi_init() — and do NOT add setSleep(false)
     WiFi.disconnect(/*wifioff=*/false);   // drop any previous association first
     start_attempt();
 
