@@ -8,6 +8,7 @@
 #include "ble_sessionlog.h"
 #include "ble_command.h"
 #include "ble_ota.h"
+#include "display.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -259,6 +260,7 @@ class ConfigCharCallbacks : public NimBLECharacteristicCallbacks {
             // synchronization path that does not exist yet in app.cpp — see
             // docs/BLE_CONFIG_CONTRACT.md open question #1.
             coin_counter_set_polarity(cfg.coin_active_high);
+            display_show_notice(NOTICE_SETTINGS_SAVED);
             Serial.println("BLE config write OK — stored. Send AT+RESET or power-cycle to apply the rest.");
         }
         // Invalid writes are logged (with the specific reason) inside
@@ -279,9 +281,18 @@ class ConfigCharCallbacks : public NimBLECharacteristicCallbacks {
 // m_advertiseOnDisconnect regardless of whether callbacks are installed — so
 // this does not change the connect behaviour that already works.
 class ServerCallbacks : public NimBLEServerCallbacks {
+    // Both of these only post to the display queue, which never blocks — these
+    // run on the NimBLE host task, where anything slow stalls the link itself.
+    void onConnect(NimBLEServer* s, ble_gap_conn_desc* desc) override {
+        (void)s; (void)desc;
+        // So an operator in front of the machine can see the app reached it.
+        // Suppressed by the display task if a session or config page is up.
+        display_show_notice(NOTICE_APP_CONNECTED);
+    }
     void onDisconnect(NimBLEServer* s, ble_gap_conn_desc* desc) override {
         (void)s;
         ble_sessionlog_on_disconnect(desc->conn_handle);
+        display_show_notice(NOTICE_APP_DISCONNECTED);
     }
 };
 

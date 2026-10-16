@@ -50,6 +50,9 @@ typedef enum : uint8_t {
     DISP_DENIED,
     DISP_CONFIG_PRICE,
     DISP_TEST_MODE,
+    DISP_NOTICE,      // a: DisplayNotice
+    DISP_UPDATING,    // a: percent 0..100, b: non-zero on the final "rebooting"
+    DISP_UPDATING_OFF,
 } DispType;
 
 typedef struct {
@@ -102,6 +105,23 @@ static bool              s_test_active       = false;
 static uint32_t          s_test_pulses       = 0;
 static bool              s_test_slot_on      = false;
 static uint32_t          s_test_presses      = 0;
+
+// Notice / firmware-update state — see the block comment in display.h.
+//
+// s_screen_busy is what stops a notice stepping on something that matters. It
+// is set from the LAST screen posted, not from app state: this file has no
+// business reaching into the app task, and "what is on the LCD right now" is
+// exactly the question being asked anyway.
+#define NOTICE_HOLD_MS     2500
+#define NOTICE_POLL_MS      250    // queue wait while a notice is counting down
+
+static bool              s_screen_busy       = false;  // a vend or a config page is showing
+static bool              s_notice_active     = false;
+static uint8_t           s_notice_id         = 0;
+static uint32_t          s_notice_until_ms   = 0;
+static bool              s_updating_active   = false;  // sticky: survives the heartbeat
+static uint8_t           s_updating_pct      = 0;
+static bool              s_updating_final    = false;
 
 // =============================================================================
 // I2C bus recovery — called ONLY from display_task_run
@@ -504,6 +524,44 @@ static void lcd_render_config_price(uint32_t price_cents) {
     lcd_row_bracketed(1, label, '-', '+');
 }
 
+// Notice text. Both rows are written every time: a 16x2 keeps whatever was on
+// the row you don't touch, so a one-row notice would leave half of the previous
+// screen underneath it and read as a garbled mix of the two.
+static void lcd_render_notice(uint8_t notice) {
+    const char* row0;
+    const char* row1;
+    switch ((DisplayNotice)notice) {
+        case NOTICE_APP_CONNECTED:     row0 = "APP CONNECTED";   row1 = "please wait";    break;
+        case NOTICE_APP_DISCONNECTED:  row0 = "APP DISCONNECTED";row1 = "";               break;
+        case NOTICE_SETTINGS_SAVED:    row0 = "SETTINGS SAVED";  row1 = "from the app";   break;
+        case NOTICE_EARNINGS_RESET:    row0 = "EARNINGS RESET";  row1 = "totals cleared"; break;
+        case NOTICE_DEFAULTS_RESTORED: row0 = "SETTINGS RESET";  row1 = "defaults loaded";break;
+        case NOTICE_CLOCK_SET:         row0 = "CLOCK SET";       row1 = "";               break;
+        default:                       row0 = "";                row1 = "";               break;
+    }
+    lcd_row_centered(0, row0);
+    lcd_row_centered(1, row1);
+}
+
+// The firmware-update screen.
+//
+// Row 1 is DO NOT UNPLUG rather than a progress bar, and that is the whole
+// point of this screen: the board is about to reboot into a half-written
+// partition if it loses power at the wrong moment, and nobody standing in
+// front of a vending machine knows that. The percentage lives on row 0 beside
+// the label, where it is reassurance rather than the headline.
+static void lcd_render_updating(uint8_t pct, bool final_stage) {
+    char row0[17];
+    if (final_stage) {
+        snprintf(row0, sizeof(row0), "RESTARTING");
+    } else {
+        if (pct > 100) pct = 100;
+        snprintf(row0, sizeof(row0), "UPDATING %u%%", (unsigned)pct);
+    }
+    lcd_row_centered(0, row0);
+    lcd_row_centered(1, "DO NOT UNPLUG");
+}
+
 // =============================================================================
 // Queue post helper — non-blocking, called from any task
 // =============================================================================
@@ -558,6 +616,18 @@ void display_show_session(uint32_t remaining_ms) {
 }
 void display_show_done() {
     disp_post(DISP_DONE, 0, 0);
+}
+void display_show_notice(DisplayNotice notice) {
+    disp_post(DISP_NOTICE, (uint32_t)notice, 0);
+}
+void display_show_updating(uint8_t percent) {
+    disp_post(DISP_UPDATING, (uint32_t)percent, 0);
+}
+void display_show_updating_done() {
+    disp_post(DISP_UPDATING, 100, 1);
+}
+void display_clear_updating() {
+    disp_post(DISP_UPDATING_OFF, 0, 0);
 }
 void display_show_config(uint32_t relay_on_ms) {
     disp_post(DISP_CONFIG, relay_on_ms, 0);
@@ -635,7 +705,23 @@ void display_task_run(void* arg) {
 
     DispMsg msg;
     for (;;) {
-        if (xQueueReceive(s_disp_queue, &msg, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        // Poll fast while a notice is counting down, so it comes off the screen
+        // when it expires rather than whenever the 5 s heartbeat next happens
+        // to fire. Idle cost is unchanged: this only shortens the wait for the
+        // couple of seconds a notice is up.
+        const TickType_t wait = s_notice_active ? pdMS_TO_TICKS(NOTICE_POLL_MS)
+                                                : pdMS_TO_TICKS(5000);
+        if (xQueueReceive(s_disp_queue, &msg, wait) != pdTRUE) {
+            // A firmware update owns the screen until it reboots or is cleared.
+            // No heartbeat redraw, no reinit: the LCD is fine, and repainting
+            // it would flicker the one message that must stay put.
+            if (s_updating_active) continue;
+
+            if (s_notice_active) {
+                if ((int32_t)(millis() - s_notice_until_ms) < 0) continue;  // still showing
+                s_notice_active = false;   // expired — fall through and restore idle
+            }
+
             // 5 s with no messages — reinit the HD44780 and re-render idle to
             // clear any garble caused by relay-off EMI that did not trip an I2C
             // bus error. Re-render whichever idle variant was last shown (plain
@@ -660,9 +746,35 @@ void display_task_run(void* arg) {
             s_test_pulses  = msg.a;
             s_test_slot_on = (msg.b != 0);
             s_test_presses = msg.c;
-        } else {
+        } else if (msg.type != DISP_NOTICE && msg.type != DISP_UPDATING &&
+                   msg.type != DISP_UPDATING_OFF) {
             s_test_active = false;
         }
+
+        // Which screens a notice must not interrupt. IDLE and its variants are
+        // the only states where nothing is owed to anyone — a session is a
+        // customer's paid time, and a config page is an operator mid-edit.
+        // Tracked from the posted screen rather than from app state so this
+        // file stays out of the app task's business.
+        switch (msg.type) {
+            case DISP_BOOT:
+            case DISP_IDLE:
+            case DISP_IDLE_AUTO:
+                s_screen_busy = false;
+                break;
+            case DISP_NOTICE:
+            case DISP_UPDATING:
+            case DISP_UPDATING_OFF:
+                break;                 // these do not change what is underneath
+            default:
+                s_screen_busy = true;  // session, config page, test mode, denied...
+                break;
+        }
+
+        // A notice never displaces the update screen either: the board is going
+        // to reboot, and "APP DISCONNECTED" over the top of DO NOT UNPLUG is
+        // actively dangerous advice.
+        if (msg.type == DISP_NOTICE && (s_screen_busy || s_updating_active)) continue;
 
         // Lazy one-time init: Wire/LCD setup is deferred to the first message
         // because s_type is set by display_init() in the app task (after
@@ -738,6 +850,31 @@ void display_task_run(void* arg) {
                 break;
             case DISP_SESSION:
                 if (s_type == DISPLAY_LCD_16X2) lcd_render_session(msg.a);
+                break;
+            case DISP_NOTICE:
+                s_notice_active   = true;
+                s_notice_id       = (uint8_t)msg.a;
+                s_notice_until_ms = millis() + NOTICE_HOLD_MS;
+                if (s_type == DISPLAY_LCD_16X2) lcd_render_notice(s_notice_id);
+                break;
+            case DISP_UPDATING:
+                // Takes the screen and keeps it. Re-rendered on every progress
+                // post, which is what makes the percentage move.
+                s_updating_active = true;
+                s_updating_pct    = (uint8_t)msg.a;
+                s_updating_final  = (msg.b != 0);
+                s_notice_active   = false;
+                if (s_type == DISPLAY_LCD_16X2) lcd_render_updating(s_updating_pct, s_updating_final);
+                break;
+            case DISP_UPDATING_OFF:
+                // The update is off the table; put the idle screen back rather
+                // than leaving DO NOT UNPLUG on a board nobody is updating.
+                s_updating_active = false;
+                s_updating_final  = false;
+                if (s_type == DISPLAY_LCD_16X2) {
+                    if (s_idle_is_auto) lcd_render_idle_auto(s_idle_credits, s_idle_required);
+                    else                lcd_render_idle(s_idle_credits);
+                }
                 break;
             case DISP_DONE:
                 if (s_type == DISPLAY_LCD_16X2) {

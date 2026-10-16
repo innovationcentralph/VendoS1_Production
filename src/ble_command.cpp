@@ -3,6 +3,7 @@
 #include "config.h"
 #include "counters.h"
 #include "diag.h"
+#include "display.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -135,6 +136,7 @@ static void execute(const PendingCommand& c) {
                 break;
             }
             counters_reset_earnings();
+            display_show_notice(NOTICE_EARNINGS_RESET);
             Serial.println("BLE reset_earnings - today and lifetime takings zeroed");
             break;
 
@@ -149,6 +151,7 @@ static void execute(const PendingCommand& c) {
                 config_defaults(&defaults);
                 config_save(&defaults);
             }
+            display_show_notice(NOTICE_DEFAULTS_RESTORED);
             // Same caveat as every other config write, and the reason the CLI
             // prints it too: the running app task is still using the old
             // values until a reset.
