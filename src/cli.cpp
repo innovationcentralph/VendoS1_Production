@@ -5,12 +5,14 @@
 #include "counters.h"
 #include "eventlog.h"
 #include "ble_command.h"
+#include "ble_ota.h"
 #include "app.h"          // AT+TEST drives the app task test-mode request channel
 #include "diag.h"
 #include "periph.h"
 #include "display.h"
 #include "wdt.h"
 #include "version.h"
+#include "ota_guard.h"
 #include <esp_system.h>
 #include <string.h>
 #include <ctype.h>
@@ -60,8 +62,20 @@ static void cmd_ping(const char* args, Stream& out) {
 // AT+VERSION?  — report firmware version
 static void cmd_version(const char* args, Stream& out) {
     (void)args;
-    out.print("firmware_version = "); out.println(FW_VERSION_STRING);
+    // FULL, not STRING: this is the support-call question ("what is this board
+    // running?"), and the semver alone cannot tell two builds apart.
+    out.print("firmware_version = "); out.println(FW_VERSION_FULL);
+    out.print("build_epoch = ");      out.println((uint32_t)FW_BUILD_EPOCH);
     out.println("OK");
+}
+
+// AT+OTA?  — which slot is running, and whether this image is still on trial
+static void cmd_ota_status(const char* args, Stream& out) {
+    (void)args;
+#ifdef ENABLE_BLE
+    ble_ota_print_status(out);
+#endif
+    ota_guard_print_status(out);
 }
 
 // AT+EEPROM?  — raw hex dump + re-parsed fields
@@ -866,6 +880,7 @@ static const CliCommand kCommands[] = {
     { "AT+HELP?",        "List all supported commands",                          cmd_help        },
     { "AT+PING",         "Reply with PONG (link check)",                         cmd_ping        },
     { "AT+VERSION?",     "Report firmware version",                              cmd_version     },
+    { "AT+OTA?",         "Report OTA slot, image state and trial status",        cmd_ota_status  },
     { "AT+EEPROM_RESET", "Overwrite stored config with factory defaults",        cmd_eeprom_reset},
     { "AT+EEPROM?",      "Dump raw stored bytes + all parsed config fields",     cmd_eeprom_dump },
     { "AT+CFG?",         "Show parsed config (relay time, beeps, etc.)",         cmd_cfg_show    },

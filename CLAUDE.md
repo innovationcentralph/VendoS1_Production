@@ -242,10 +242,18 @@ correctly*. That is right for settings and catastrophic for identity. Nothing in
 `vendolog`, 128 KB, 8,192 records of 16 bytes, defined in
 `partitions_vendo.csv` and driven by `src/eventlog.*`. Two rules come with it:
 
-- **Nothing below `0x290000` in that CSV may move.** `nvs` at `0x9000` holds the
-  write-once factory serial, and `app0`/`app1` offsets are baked into the OTA
-  data and into every binary already flashed. The 128 KB was taken from the
-  `spiffs` partition, which nothing in this firmware mounts.
+- **`nvs` at `0x9000` and `otadata` at `0xe000` may never move.** `nvs` holds the
+  write-once factory serial, the config blob and the earnings totals; shifting it
+  orphans every provisioned board. The bootloader reads `otadata` from a fixed
+  offset to decide which app slot to boot.
+- **2026-10-16: everything above `0x10000` did move.** The app slots grew from
+  1.25 MB to 1.875 MB and `spiffs` was dropped (nothing mounted it); `vendolog`
+  went from `0x290000` to `0x3D0000`. The rule here used to be "nothing below
+  `0x290000` may move", which held until OTA — an over-the-air image must fit the
+  slot it is flashed into, so slot size is a hard ceiling on every future
+  release, and a WiFi-capable build measured **93% of a 1.25 MB slot before any
+  OTA code existed**. Changing app slots needs a serial re-flash, so it had to
+  happen before the first OTA rather than after.
 - **A board flashed from an older build keeps its old partition table** until
   `partitions.bin` is uploaded (a normal `-t upload` does this). Until then the
   boot banner says `` `vendolog` partition not found — Session Log (f004)

@@ -67,8 +67,18 @@
 // STORAGE: A DEDICATED FLASH PARTITION, NOT NVS
 // ---------------------------------------------------------------------------
 //
-// `vendolog`, 128 KB, carved out of the unused SPIFFS region — see
-// partitions_vendo.csv for why nothing below 0x290000 was allowed to move.
+// `vendolog`, 128 KB. It used to sit at 0x290000, carved out of the unused
+// SPIFFS region. **2026-10-16: it moved to 0x3D0000** when the app slots grew
+// from 1.25 MB to 1.875 MB to make room for WiFi + OTA — SPIFFS is gone
+// entirely now. partitions_vendo.csv has the sizing measurements, and what may
+// still never move (`nvs`, `otadata`).
+//
+// Nothing here depends on the offset: the partition is found by label and
+// subtype (esp_partition_find_first), so the move needed no code change. What
+// it does mean is that a board re-flashed with the new table finds a different
+// region, loses whatever the old one held, and erases the new one once (below).
+// Sync a board before re-flashing it, or any session the server has not acked
+// is gone.
 //
 //   32 sectors x 4096 B = 8192 slots of 16 B
 //   ~8,100 sessions retained — months at any realistic vend rate. (Sized when a

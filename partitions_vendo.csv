@@ -1,5 +1,6 @@
-# Vendo S1 partition table — the stock arduino-esp32 `default.csv` with the
-# Session Log's storage carved out of the (unused) SPIFFS region.
+# Vendo S1 partition table — two 1.875 MB OTA app slots, the Session Log's
+# storage, and nothing else. The stock `spiffs` region is gone: no code in this
+# firmware ever mounted it.
 #
 # WHY THIS FILE EXISTS
 #
@@ -11,24 +12,59 @@
 # operator visits is ~100 KB. It does not fit, and rewriting a multi-KB blob on
 # every coin would burn the same partition that holds the board's identity.
 #
+# 2026-10-16 — THE APP SLOTS GREW FROM 1.25 MB TO 1.875 MB, FOR OTA.
+#
+# The earlier table kept the stock 0x140000 app slots and left `spiffs` (1.25 MB,
+# unmounted by anything) sitting idle. That was free headroom until OTA: an
+# over-the-air image has to fit the slot it is flashed into, so the slot size is
+# a hard ceiling on every future release. Measured on this firmware:
+#
+#   today, no WiFi ........................  669 KB   51% of a 1.25 MB slot
+#   + WiFi + HTTP + Update + SHA-256 ...... 1226 KB   93% of a 1.25 MB slot
+#
+# The WiFi stack alone is ~556 KB. At 93% there is no room left for the WiFi
+# provisioning, check-in and OTA code that has to sit on top of it, and a
+# firmware that outgrows its slot can only be recovered with a serial cable —
+# the exact failure OTA exists to prevent. Reclaiming `spiffs` moves that
+# ceiling to 1.875 MB (the same build lands at 64%).
+#
+# This HAD to happen before the first OTA, not after: changing app0/app1 means
+# re-flashing over serial, which cannot be done over the air by definition. Done
+# while the fleet was one bench board; after rollout it would be a site visit per
+# machine.
+#
 # THE ONE RULE WHEN EDITING THIS FILE
 #
-# NOTHING BELOW 0x290000 MAY MOVE. `nvs` at 0x9000 holds the write-once factory
-# serial; shifting it orphans every provisioned board. app0/app1 offsets are
-# baked into the bootloader's OTA data and into every binary already flashed.
-# The 128 KB for `vendolog` therefore comes out of `spiffs` (0x160000 ->
-# 0x140000), which no code in this firmware mounts or reads.
+# `nvs` AT 0x9000 MAY NEVER MOVE. It holds the write-once factory serial, and
+# shifting it orphans every provisioned board — its identity, its config and its
+# earnings totals all live there. `otadata` at 0xe000 is likewise fixed: the
+# bootloader reads it from a known offset to decide which app slot to boot.
+#
+# Everything above 0x10000 is movable, at the price of a serial visit to every
+# board already flashed with a different table. `vendolog` moving is the cheap
+# half of that (the log is a ring of completed sessions, and sessions already
+# acked by the server are redundant) — but sync a board before re-flashing it,
+# or anything it holds that the server has not yet acked is gone. eventlog.cpp
+# finds its partition by label and subtype, never by offset, and erases the
+# region once if it finds foreign data there, so the move needs no code change.
 #
 # vendolog: data/0x40 (the first user-defined data subtype — it is deliberately
 # not `spiffs` or `nvs`, so no framework code will ever try to mount or format
 # it). 0x20000 = 32 sectors of 4096 = 8192 records of 16 bytes. See
 # src/eventlog.h for the record layout and the ring's wrap policy.
 #
+# Layout (4 MB flash, fully allocated, ends exactly at 0x400000):
+#   0x009000  nvs       20 KB    identity, config, counters, BLE bonds
+#   0x00e000  otadata    8 KB    which app slot the bootloader runs
+#   0x010000  app0    1875 KB    OTA slot A
+#   0x1f0000  app1    1875 KB    OTA slot B
+#   0x3d0000  vendolog 128 KB    Session Log ring
+#   0x3f0000  coredump  64 KB    panic dumps
+#
 # Name,     Type, SubType, Offset,   Size,     Flags
 nvs,        data, nvs,     0x9000,   0x5000,
 otadata,    data, ota,     0xe000,   0x2000,
-app0,       app,  ota_0,   0x10000,  0x140000,
-app1,       app,  ota_1,   0x150000, 0x140000,
-vendolog,   data, 0x40,    0x290000, 0x20000,
-spiffs,     data, spiffs,  0x2B0000, 0x140000,
+app0,       app,  ota_0,   0x10000,  0x1E0000,
+app1,       app,  ota_1,   0x1F0000, 0x1E0000,
+vendolog,   data, 0x40,    0x3D0000, 0x20000,
 coredump,   data, coredump,0x3F0000, 0x10000,

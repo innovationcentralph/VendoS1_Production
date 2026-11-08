@@ -80,12 +80,36 @@ static void republish() {
     }
 
     uint8_t buf[128];
+
+    // put_str() truncates at 255 (the length prefix is a u8) but does NOT know
+    // how big this buffer is, so the only thing standing between a longer field
+    // and an overflow is arithmetic nobody re-does. Since 2026-10-16 one of
+    // these fields is set at BUILD TIME (FW_VERSION_FULL carries the commit
+    // sha), so pin the worst case here and let the compiler re-check it on
+    // every build instead:
+    //
+    //   schema + modules                              2
+    //   device_id   len + longest of serial/unset   1 + 23
+    //   model       len + "Vendo S1"                1 + 8
+    //   fw_version  len + semver + '+' + build id   1 + N
+    static_assert(2
+                  + 1 + (sizeof(unset) - 1)
+                  + 1 + (sizeof(BLE_DEVICEINFO_MODEL) - 1)
+                  + 1 + (sizeof(FW_VERSION_FULL) - 1)
+                  <= sizeof(buf),
+                  "Device Info payload outgrew buf[] - grow the buffer, do not "
+                  "let put_str() run past it");
+
     size_t n = 0;
     buf[n++] = BLE_DEVICEINFO_SCHEMA_VERSION;
     buf[n++] = modules_bitmap();
     n = put_str(buf, n, device_id);
     n = put_str(buf, n, BLE_DEVICEINFO_MODEL);
-    n = put_str(buf, n, FW_VERSION_STRING);
+    // FULL, not STRING. The app shows this on MachineDetail and the backend
+    // compares it to decide whether an OTA is due, so it has to identify the
+    // binary, not just the release line. Length-prefixed on the wire, so the
+    // longer string costs nothing structurally — see the buffer note below.
+    n = put_str(buf, n, FW_VERSION_FULL);
 
     s_char->setValue(buf, n);
 }

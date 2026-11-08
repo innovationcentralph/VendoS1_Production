@@ -11,6 +11,7 @@
 #include "display.h"
 #include "wdt.h"
 #include "version.h"
+#include "ota_guard.h"
 #ifdef ENABLE_CLI
 #include "cli.h"
 #endif
@@ -19,6 +20,7 @@
 #include "ble_livecounters.h"
 #include "ble_diagnostics.h"
 #include "ble_command.h"
+#include "ble_ota.h"
 #endif
 
 // =============================================================================
@@ -99,7 +101,7 @@ void setup() {
 
     Serial.println();
     Serial.println("=== Vendo S1 Production boot ===");
-    Serial.print("Firmware version: "); Serial.println(FW_VERSION_STRING);
+    Serial.print("Firmware version: "); Serial.println(FW_VERSION_FULL);
     Serial.println("Port of VendoBoard STM32 production firmware (main @ ee8e253)");
 
     // Identity, before anything else that might scroll. An unprovisioned board
@@ -201,6 +203,12 @@ void setup() {
         esp_restart();
     }
 
+    // Last, because its self-test asks whether BLE is reachable and whether the
+    // app task is checking in — both of which have to exist first. On an
+    // ordinary boot this is a no-op; it only does anything when the running
+    // image is a freshly OTA'd one still on trial. See src/ota_guard.h.
+    ota_guard_init();
+
     Serial.print("Free heap after task creation: ");
     Serial.println((unsigned)esp_get_free_heap_size());
     Serial.println("Running.");
@@ -236,6 +244,11 @@ void loop() {
     // (src/eventlog.h). Costs nothing when the queue is empty.
     eventlog_service();
     diag_service();
+    // Confirms or rolls back a freshly OTA'd image. Outside ENABLE_BLE on
+    // purpose: a build without BLE still has to settle a pending image, or it
+    // would revert on the next power cut. Two millis() compares when idle, and
+    // nothing at all once settled.
+    ota_guard_service();
 #ifdef ENABLE_BLE
     ble_livecounters_service();   // notify subscribers when the counters move
     ble_diagnostics_service();    // and when a fault is raised or cleared
@@ -244,6 +257,10 @@ void loop() {
     // helpers block for hundreds of ms and the relay belongs to the vend path.
     // See src/ble_command.h.
     ble_command_service();
+    // Carries out whatever OTA Control queued — the slot erase and the image
+    // finalise are seconds-long operations that must not run inside a GATT
+    // callback. See src/ble_ota.h.
+    ble_ota_service();
 #endif
 
 #ifdef ENABLE_CLI
