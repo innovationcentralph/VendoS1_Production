@@ -59,6 +59,9 @@ one-line fix is not yet safe to switch on.
 | R21 | LOW    | style    | `PIN_USER_LED` is written directly from `app.cpp` | `[ ]` |
 | R22 | MEDIUM | policy   | `ENABLE_CLI` on a field unit is a free-vend backdoor at J7 | `[ ]` |
 | R23 | HIGH   | money    | A reboot with an untrusted RTC zeroes today's earnings, and persists the zero | `[~]` |
+| R24 | HIGH   | money    | `counters.last_seq` never updates, so the seq floor that protects an erased log is dead | `[ ]` |
+| R25 | HIGH   | money    | The NVS flush holds the counters mutex, so a coin arriving during it is silently dropped | `[ ]` |
+| R26 | HIGH   | money    | A paid vend can be counted in the totals but never written to the event log, so it never syncs | `[ ]` |
 
 Build at time of review: **RAM 6.7%** (22 080 / 327 680 B), **Flash 24.1%**
 (315 961 / 1 310 720 B). There is no size pressure on this board — every
@@ -641,3 +644,169 @@ the backend's synced DailyStat. Session Log rows sit in `vendolog` and survive t
 | --- | --- |
 | 2026-08-24 | First pass against `69260ad`. R1–R22 opened. |
 | 2026-09-22 | R23 opened (app team, from a field report) against `b416193`; fix on `fix/counters-unknown-day`. |
+| 2026-10-12 | R24 opened (app team, observed on hardware) against `feade45`. |
+
+---
+
+## R24. [HIGH] `counters.last_seq` never updates, so the seq floor is dead
+
+**Files:** `counters_set_last_seq()` in `src/counters.cpp:206`, its caller in
+`src/eventlog.cpp:246`, the floor that consumes it in `src/eventlog.cpp:303`.
+
+**Observed on a real board (serial VLABS-S1-00001) on 2026-10-12**, firmware
+`feade45`:
+
+```
+AT+LOG?       stored = 33, range = seq 1 .. 33, next seq = 34
+AT+COUNTERS?  last_seq = 0
+```
+
+Thirty-three sessions appended; the counter that is supposed to track them
+reads zero. It stayed at zero across several appends watched live, so this is
+not a stale read.
+
+**Why it matters.** `counters.last_seq` is not bookkeeping - `eventlog_init()`
+uses it as the floor that stops a freshly-erased or re-partitioned log from
+reissuing sequence numbers the backend has already filed:
+
+```c
+const uint32_t floor_seq = counters_last_seq();
+if (s_next_seq <= floor_seq) s_next_seq = floor_seq + 1;
+```
+
+With the floor stuck at 0 that protection does nothing. Any erase of
+`vendolog` restarts seq at 1, and the backend - which keys sessions on
+`(machineId, seq, occurredAt)` and ignores anything at or below its own
+cursor - will either drop the new sessions as already-seen or collide with
+the identities of deleted ones. Both outcomes lose money records silently.
+
+**This currently blocks a feature.** The app team wants "reset this machine's
+data" to clear the board's event log as well as its counters, so that removing
+and re-adding a machine cannot resurrect deleted history from the board. That
+erase is unsafe until the floor works.
+
+**It also fed a second bug, now worked around app-side.** Live Counters
+serialises this same field (`counters.cpp:240`), and the app used it as the
+fallback for `sync_ack` when a pull returned no events - so it spent every
+sync telling the board the backend held nothing. The app now takes the highest
+of all its sources and refuses to send 0, so it no longer depends on this
+field being correct.
+
+**Not diagnosed.** The lines either side of the call in `append_locked()`
+(`s_oldest_seq`, `s_count`) do take effect, so the call site is reached. The
+two modules use separate mutexes, so it is not a nested-lock deadlock. The
+remaining suspect is `counters_set_last_seq()`'s own `Lock` timing out against
+whoever holds the counters mutex, since it returns silently when it cannot
+acquire it (`if (!lock.held) return;`) - but that was not proven, and a silent
+early return on a money path is worth confirming rather than assuming. One
+`Serial.print` on the failed-acquire branch would settle it.
+
+---
+
+## R25. [HIGH] The NVS flush holds the counters mutex, so coins can be silently dropped
+
+**Files:** `counters_save_locked()` in `src/counters.cpp:86`, the `Lock` at
+`src/counters.cpp:47`, and every caller that takes it - in particular
+`counters_record_coin()` at `:134`.
+
+**Found 2026-10-12 while diagnosing R24, on hardware.** R24 is a symptom of
+this; this is the cause, and it reaches further than the seq floor.
+
+`counters_save_locked()` performs the NVS write - `prefs.begin()`,
+`prefs.putBytes()`, `prefs.end()` - **with the counters mutex held**. An NVS
+write is flash work: a few milliseconds normally, far longer when the page
+needs compaction or an erase, and longer again under contention with the BLE
+stack.
+
+Every counters entry point waits exactly 100 ms for that mutex and then
+**returns silently**:
+
+```c
+if (s_lock) held = (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) == pdTRUE);
+...
+if (!lock.held) return;
+```
+
+The consequences, in order of how much they cost:
+
+| Caller | What a missed lock costs |
+| --- | --- |
+| `counters_record_coin()` | **The coin's money is never recorded.** The customer paid and the board took it. |
+| `counters_record_session()` | The vend is not counted in today's sessions. |
+| `counters_set_last_seq()` | The seq floor stops advancing - R24. |
+
+The coin task runs at a higher priority than `loop()`, which is where the
+flush happens, so a coin arriving mid-flush blocks for 100 ms and then gives
+up. Higher priority does not help when the resource is held.
+
+**This is observed, not theoretical.** The instrumented build printed
+`set_last_seq(34) FAILED - could not take the lock` on a real board, which
+means the mutex was held beyond 100 ms at that moment. The same window drops
+coins.
+
+**Why it is easy to miss.** Nothing fails loudly. The board keeps running, the
+LCD keeps working, and the only trace is that the takings are slightly lower
+than the cash in the box - which looks like a coin acceptor problem, or like
+someone pocketing money, long before it looks like firmware.
+
+**Suggested fix.** Do not hold the mutex across the flash write. Take the
+lock, copy the blob to a local, release, then write the copy outside the lock.
+The blob is 24 bytes, so the copy is free, and a snapshot that is momentarily
+stale is harmless - the next service tick flushes again. That removes the only
+long hold of this mutex and makes every 100 ms timeout above it
+unreachable in practice.
+
+Raising the timeout instead would be the wrong fix: it narrows the window
+without closing it, and a coin dropped once a month is harder to find than one
+dropped every day.
+
+---
+
+## R26. [HIGH] A paid vend can be counted but never logged, so it never reaches the backend
+
+**Files:** `eventlog_record_session()` in `src/eventlog.cpp:342`, its
+`s_open_cents` accumulator fed by `eventlog_note_billed()` from
+`src/periph.cpp:380`, called at SESSION_END from `src/app.cpp:954`.
+
+**Observed on hardware 2026-10-12**, firmware built from `feade45` plus
+diagnostics, board `VLABS-S1-00001`, `operation_mode = 0 (Press to Start)`,
+`coins_required = 1`, `price_per_credit = 1.00`.
+
+A single coin was inserted and the vend completed. Before and after:
+
+| | before | after |
+| --- | --- | --- |
+| `AT+COUNTERS?` sessions | 6 | **7** |
+| `AT+COUNTERS?` today | P10.00 | **P11.00** |
+| `AT+LOG?` stored / next seq | 36 / 37 | **36 / 37 - unchanged** |
+
+The money and the session count both moved. The event log did not. A serial
+recorder was attached across the whole vend and captured **nothing**, so
+`write_one_locked()` was never reached - the row never entered the queue.
+`AT+DIAG?` reported no faults, so the queue did not reject it either
+(a failed `xQueueSend` raises `DIAG_ERR_NVS_WRITE`).
+
+That leaves the early return in `eventlog_record_session()`:
+
+```c
+if (s_open_cents == 0) return;      // nothing was billed - not a session
+```
+
+`s_open_cents` is accumulated by `eventlog_note_billed()` on the billing path
+and cleared on every `eventlog_record_session()`. For a vend that plainly took
+a coin, it was zero at SESSION_END.
+
+**Why this is the worst of the three.** R24 and R25 are about a counter and a
+timing window. This one loses a whole sale: the board's own meter says the
+money came in, and the backend will never see it, because the only channel to
+the backend is the event log. There is no later reconciliation that can
+recover it - `today_amount` is not itemised and syncs as a single number the
+app displays, not as rows.
+
+**Not diagnosed.** Likely candidates, none confirmed: billing not running in
+Press-to-Start the way it does in Auto Start (the board was switched to
+Press-to-Start by a reset-to-defaults earlier the same session, and the
+earlier Auto Start vends DID log); `s_open_cents` consumed by an earlier
+`eventlog_record_session()` call so the real one finds zero; or SESSION_END
+firing on a path that never billed. Worth reproducing in both operation modes
+before changing anything - the difference between them is the strongest clue.
