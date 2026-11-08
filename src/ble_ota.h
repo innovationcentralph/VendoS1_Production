@@ -62,15 +62,12 @@ void ble_ota_register(NimBLEService* service);
 // when no update is in flight.
 void ble_ota_service();
 
-// True while an image is being received or verified.
-//
-// Reporting only — nothing in the vend path consults it, and that is on
-// purpose: app.cpp is kept diffable against the STM32 (see CLAUDE.md), which
-// has no OTA, so an OTA test does not belong in its state machine. The race it
-// would otherwise guard — a session starting during the minutes a BLE transfer
-// takes — is handled at the other end instead: ota_commit re-checks idle and
-// defers rather than rebooting mid-vend.
-bool ble_ota_in_progress();
-
 // AT+OTA? prints this alongside the slot/rollback state from ota_guard.
+//
+// There is deliberately no ble_ota_in_progress() accessor. One was written and
+// removed unused: the only caller it was meant for was the vend path, and
+// app.cpp is kept diffable against the STM32 (see CLAUDE.md), which has no OTA
+// — so an OTA test does not belong in its state machine. The race it would have
+// guarded, a session starting during a transfer, is handled at the other end
+// instead: ota_commit re-checks idle and defers rather than rebooting mid-vend.
 void ble_ota_print_status(Stream& out);

@@ -124,3 +124,48 @@ void display_set_idle_pricing(uint32_t coins_required, uint32_t relay_on_ms, boo
 // Diagnostic snapshot for AT+LCD? — whether the panel is considered healthy,
 // its I2C address, and how many recoveries have been attempted.
 void display_print_status(Stream& out);
+
+// =============================================================================
+// Notices — what the board is doing when it is not vending (2026-10-16)
+//
+// Everything the app does to a board was invisible from in front of the
+// machine: it connects, rewrites the config, resets the earnings, replaces the
+// firmware and reboots, and the LCD says READY throughout. An operator cannot
+// tell a board being worked on from one that has crashed, and a reboot
+// mid-update with a blank screen reads as a dead machine.
+//
+// A notice is a short message shown for a couple of seconds, after which the
+// display task's own heartbeat drops back to idle. They are DELIBERATELY
+// SUPPRESSED while anything the customer or operator cares about is on screen —
+// a vend countdown, a config page — because "APP CONNECTED" is never worth
+// stepping on a paid session. See s_screen_busy in display.cpp.
+//
+// No STM32 counterpart: none of these events exist on that board.
+// =============================================================================
+typedef enum : uint8_t {
+    NOTICE_APP_CONNECTED,
+    NOTICE_APP_DISCONNECTED,
+    NOTICE_SETTINGS_SAVED,
+    NOTICE_EARNINGS_RESET,
+    NOTICE_DEFAULTS_RESTORED,
+    NOTICE_CLOCK_SET,
+    NOTICE_WIFI_CONNECTING,
+    NOTICE_WIFI_CONNECTED,
+    NOTICE_WIFI_FAILED,
+} DisplayNotice;
+
+void display_show_notice(DisplayNotice notice);
+
+// The firmware-update screen. NOT a notice: it does not time out and it is not
+// suppressed, because the board is about to reboot and the one thing the person
+// standing in front of it must not do is cut the power. Call it with the
+// percentage as the transfer runs.
+void display_show_updating(uint8_t percent);
+
+// The last moment before the restart — "DO NOT UNPLUG" stops being advice and
+// starts being the only thing that matters.
+void display_show_updating_done();
+
+// Drops the update screen without rebooting, for a transfer that failed or was
+// aborted and left the board running what it already had.
+void display_clear_updating();

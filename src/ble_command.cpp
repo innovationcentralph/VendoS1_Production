@@ -3,6 +3,8 @@
 #include "config.h"
 #include "counters.h"
 #include "diag.h"
+#include "display.h"
+#include "wifi_sta.h"
 #include "periph.h"
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -135,6 +137,7 @@ static void execute(const PendingCommand& c) {
                 break;
             }
             counters_reset_earnings();
+            display_show_notice(NOTICE_EARNINGS_RESET);
             Serial.println("BLE reset_earnings - today and lifetime takings zeroed");
             break;
 
@@ -149,6 +152,7 @@ static void execute(const PendingCommand& c) {
                 config_defaults(&defaults);
                 config_save(&defaults);
             }
+            display_show_notice(NOTICE_DEFAULTS_RESTORED);
             // Same caveat as every other config write, and the reason the CLI
             // prints it too: the running app task is still using the old
             // values until a reset.
@@ -274,11 +278,15 @@ static void execute(const PendingCommand& c) {
             break;
 
         case CMD_OP_WIFI_FORGET:
-            // No WiFi on this board yet (f00b/f00c unbuilt). Accepted and
-            // ignored rather than refused: the app sends it as an explicit
-            // user action, and "nothing to forget" is the honest outcome, not
-            // an error. Becomes real work when WiFi lands.
-            Serial.println("BLE wifi_forget — no WiFi on this board, nothing to clear");
+            // Real work since 2026-10-16. Erases the credentials AND the
+            // backend device key, and takes the radio down — the board does
+            // not stop being on a network just because a BLE session ended,
+            // which is exactly why this op exists as an explicit action.
+            //
+            // No confirm param, unlike reset_earnings/reset_config: this
+            // destroys no money and no history, and an operator who sends it
+            // by accident re-provisions in the app in a few seconds.
+            wifi_forget();
             break;
 
         default:

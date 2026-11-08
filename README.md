@@ -144,6 +144,7 @@ clears settings without touching a board's identity or its takings.
 | `AT+LOG?` | Event log health — depth, seq range, wraps, drops |
 | `AT+LOG=<rows>[,<after_seq>]` | Dump events. `AT+LOG=10,0` is the first page the app would pull on a machine it has never synced |
 | `AT+SYNC?` | Whether the app has ever confirmed a sync, and up to which seq |
+| `AT+OTA?` | Firmware update state — which app slot is running, what the board would fall back to, and whether the running image is still on trial |
 | `AT+TEST?` | Test-mode status — coin slot, pulse count, button press count |
 | `AT+TEST=1` / `AT+TEST=0` | Enter / leave test mode. Entering requires an idle board |
 | `AT+TEST=COIN1` / `=COIN0` | Coin slot while in test mode. Enabling restarts the pulse count at 0 |

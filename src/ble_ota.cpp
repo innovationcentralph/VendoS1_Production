@@ -1,6 +1,7 @@
 #include "ble_ota.h"
 
 #include "app.h"
+#include "display.h"
 #include "periph.h"
 #include "version.h"
 
@@ -121,6 +122,10 @@ static void fail(uint8_t err, const char* why) {
     }
     s_state = OTA_STATE_ERROR;
     s_error = err;
+    // Put the idle screen back. The board is not updating and is not about to
+    // reboot, so leaving DO NOT UNPLUG up would strand a working machine
+    // looking like it is mid-surgery.
+    display_clear_updating();
     Serial.print("OTA:    FAILED at byte ");
     Serial.print(s_bytesReceived);
     Serial.print(" — ");
@@ -249,6 +254,10 @@ static void do_begin() {
 
     s_state = OTA_STATE_RECEIVING;
     s_error = OTA_ERR_NONE;
+    // Takes the LCD for the duration. From here until the reboot the machine
+    // must read as "being updated", not as idle-and-ready: it will not vend,
+    // and it must not be unplugged.
+    display_show_updating(0);
     Serial.println("OTA:    ready to receive");
     s_statusDirty = true;
 }
@@ -301,6 +310,7 @@ static void do_commit() {
     s_state = OTA_STATE_DONE;
     s_error = OTA_ERR_NONE;
     publish_status(true);
+    display_show_updating_done();
 
     Serial.println("OTA:    image accepted — rebooting into it");
     Serial.println("        it boots ON TRIAL and reverts unless it proves healthy (AT+OTA?)");
@@ -323,6 +333,7 @@ static void do_abort() {
     s_state         = OTA_STATE_IDLE;
     s_error         = OTA_ERR_NONE;
     s_bytesReceived = 0;
+    display_clear_updating();
     Serial.println("OTA:    aborted — the running firmware is untouched");
     s_statusDirty = true;
 }
@@ -366,14 +377,18 @@ void ble_ota_service() {
     if (s_state == OTA_STATE_RECEIVING) {
         if ((uint32_t)(now - s_lastProgressMs) < OTA_PROGRESS_NOTIFY_MS) return;
         s_lastProgressMs = now;
+
+        // The LCD rides the same rate limit as the notify. The display queue is
+        // only 8 deep and drops when full, so posting per chunk would be
+        // thousands of frames nobody can read and would crowd out whatever the
+        // app task needs to show next.
+        if (s_expectedSize > 0) {
+            display_show_updating((uint8_t)((uint64_t)s_bytesReceived * 100u / s_expectedSize));
+        }
     }
 
     s_statusDirty = false;
     publish_status(true);
-}
-
-bool ble_ota_in_progress() {
-    return s_state == OTA_STATE_RECEIVING || s_state == OTA_STATE_VERIFYING;
 }
 
 void ble_ota_print_status(Stream& out) {

@@ -204,15 +204,47 @@ These are a private vendor UUID space, not SIG-registered.
 | **Config** | `6a40f005` | Read/Write | ✅ shipping |
 | Diagnostics | `6a40f006` | Read/Notify | ✅ built **and hardware-verified** |
 | Command | `6a40f007` | Write | ✅ built 2026-09-15 (`src/ble_command.cpp`) — the app's 7 ops, plus a provisional block `0x08`–`0x0B` claimed 2026-09-17: `test_user_led`, `test_mode`, `test_coin_slot`, `test_button` (`D21`–`D24`, needs `A13`) |
-| OTA Control | `6a40f008` | Write | ❌ |
-| OTA Data | `6a40f009` | Write | ❌ |
-| OTA Status | `6a40f00a` | Read/Notify | ❌ |
+| OTA Control | `6a40f008` | Write | ✅ built **and hardware-verified** 2026-10-16 (`src/ble_ota.cpp`) |
+| OTA Data | `6a40f009` | Write | ✅ built **and hardware-verified** 2026-10-16 |
+| OTA Status | `6a40f00a` | Read/Notify | ✅ built **and hardware-verified** 2026-10-16 |
 | WiFi Config | `6a40f00b` | Write | ❌ |
 | WiFi Status | `6a40f00c` | Read/Notify | ❌ |
 | OTA WiFi Begin | `6a40f00d` | Write | ❌ |
 
 **The `f005`-implies-`f001`–`f004` inference was correct.** Config really was allocated
 as the fifth member of a pre-existing scheme.
+
+### OTA, as actually built (2026-10-16)
+
+`f008`–`f00a` follow the app team's contract exactly — op codes, the 9-byte begin
+frame, CRC32, the 6-byte status. Three things about this implementation are worth
+knowing before changing it, and all three are properties of this board rather than
+of the contract:
+
+- **OTA Control is a mailbox, not an executor.** `Update.begin()` erases the whole
+  1.875 MB destination slot and `Update.end(true)` verifies the image — seconds,
+  not milliseconds. Running either inside a GATT callback stalls the NimBLE host
+  task, including the ATT response the phone is waiting on, long enough to risk
+  losing the connection mid-update. `loop()` performs them. OTA Data stays inline:
+  chunks are small, and there is nowhere to buffer a 1.8 MB image.
+- **`ota_commit` re-checks idle and defers.** `ota_begin` already refuses unless the
+  board is IDLE, but a BLE transfer takes a minute or more — long enough for
+  someone to drop a coin and start a session — and commit reboots. It keeps the
+  verified image and asks the phone to send commit again rather than discarding a
+  transfer that took that long to carry.
+- **The image boots on trial.** `src/ota_guard.*` holds a freshly OTA'd image in
+  `PENDING_VERIFY` until it proves BLE is reachable and the app task is alive, then
+  confirms it; otherwise the bootloader reverts to the previous slot. Verified both
+  ways on hardware: a good image confirmed, and a deliberately unreachable one
+  rolled back without a cable. `AT+OTA?` reports slot, image state and trial status.
+
+**CRC32 is a transfer check, not a signature.** It catches corruption, not tampering:
+anything that can write these characteristics can flash the board. Signing is still
+open and is required before boards we do not physically hold can be updated.
+
+Measured transfer rates, same board and image (686 KB): **~8 KB/s** from a phone at
+a 239-byte chunk, **~150 KB/s** from a Windows central at 252. The radio was never
+the limit — see `TARGET_MTU` in the app and `NimBLEDevice::setMTU` above.
 
 ### Two service UUIDs, both final, neither to be changed
 

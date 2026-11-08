@@ -1,5 +1,6 @@
 #include "ble_timesync.h"
 #include "rtc.h"
+#include "display.h"
 #include <Arduino.h>
 
 // From the app team's allocation table (docs/BLE_CONFIG_CONTRACT.md). Same
@@ -33,6 +34,14 @@ class TimeSyncCallbacks : public NimBLECharacteristicCallbacks {
         // would be a second copy of the rule that could drift from the CLI's —
         // exactly the divergence REVIEW_FINDINGS R18 and APP_BLE_PLAN X1
         // complain about for config bounds. One writer, one rule.
+        //
+        // Noted before the write so the LCD can say something only when this
+        // actually CHANGED anything. The app time-syncs on every connect, so
+        // announcing it each time would be noise on top of APP CONNECTED; a
+        // board whose clock was never set is a different matter, because that
+        // is a standing fault (diag 0x03) and the operator wants to see it go.
+        const bool clock_was_unset = (rtc_now() == 0);
+
         if (!rtc_set_epoch(epoch)) {
             Serial.print("BLE time sync rejected: epoch ");
             Serial.print((unsigned long)epoch);
@@ -45,6 +54,8 @@ class TimeSyncCallbacks : public NimBLECharacteristicCallbacks {
             Serial.println("  clock; accepting it would corrupt event-log ordering permanently.");
             return;
         }
+
+        if (clock_was_unset) display_show_notice(NOTICE_CLOCK_SET);
 
         Serial.print("BLE time sync OK — epoch ");
         Serial.print((unsigned long)epoch);

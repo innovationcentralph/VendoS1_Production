@@ -7,10 +7,13 @@ stays visible instead of being rediscovered.
 - **First pass:** 2026-08-24, against `69260ad` (whole tree, ~4.3k lines).
 - **Line references are as of that commit** and will drift — the function names
   in each **Files** line are the durable pointer.
-- **Nothing here was observed on hardware.** Same caveat as the rest of the repo
-  (see `CLAUDE.md`): this firmware has not run on a board. Every finding is read
-  from the source or verified against the pinned toolchain, and each one says
-  which.
+- **Nothing here was observed on hardware** — true of R1–R22 only. **Corrected
+  2026-10-16:** the firmware has since run on a real board for a full day of
+  OTA and WiFi work, and R27 onwards were all seen there rather than read.
+  Each entry says which it is, because they are not the same kind of evidence:
+  a finding reasoned from the source can be wrong about what the chip actually
+  does, and a finding seen on hardware can be entirely real while nobody yet
+  knows why.
 
 ## How this file relates to `docs/PENDING.md`
 
@@ -635,9 +638,164 @@ the backend's synced DailyStat. Session Log rows sit in `vendolog` and survive t
 
 ---
 
+## R27. [HIGH] `WiFi.setSleep(false)` with BLE enabled is a boot loop
+
+**Files:** `wifi_init()` and `wifi_provision()` in `src/wifi_sta.cpp` (against
+`d66564d`).
+
+**Seen on hardware, 2026-10-16, on the very first provisioning attempt.** The
+board stored its credentials, called `WiFi.begin()`, and reset about two
+seconds later with:
+
+```
+E (1937) wifi: Error! Should enable WiFi modem sleep when both WiFi and
+Bluetooth are enabled!!!!!!
+```
+
+...and then did it again, forever. WiFi and BLE share one radio on this chip,
+and the coexistence arbiter needs the WiFi side to yield time slots; modem
+sleep is how it does that. Leaving the default enabled is not a power
+optimisation here, it is what makes the two coexist at all.
+
+**The failure is worse than it first looks, for two reasons.**
+
+The credentials are persisted *before* the first connection attempt (which is
+correct — a board that reboots mid-attempt should come back trying rather than
+having forgotten). So the fatal call is reached on every subsequent boot: one
+bad provisioning wedged the board permanently, and it could only be recovered
+over serial.
+
+And it defeated the OTA rollback guard — see R28.
+
+**Fixed** in `92bcd42`; the warning is left at both call sites that would tempt
+someone to add it back.
+
+---
+
+## R28. [HIGH] The rollback guard cannot catch a failure that arrives with data
+
+**Files:** `src/ota_guard.cpp` (against `10eb06b`).
+
+**Seen on hardware, 2026-10-16**, as a consequence of R27.
+
+`ota_guard` holds a freshly OTA'd image in `PENDING_VERIFY` until it proves it
+can still be reached over BLE and that the app task is alive, then confirms it.
+That works, and was verified both ways on real hardware the same day — a good
+image confirmed, a deliberately unreachable one rolled back with no cable.
+
+It does not cover what actually happened. The image with R27 in it booted
+*perfectly*: BLE came up, the app task ticked, and the guard marked it `valid`
+after fifteen seconds, correctly by its own rules. The board had not been
+given WiFi credentials yet, so the fatal path was never reached. The crash only
+began minutes later, when an operator provisioned WiFi and gave
+`wifi_init()` something to act on — by which time the image was confirmed and
+the bootloader would never roll it back.
+
+**So the guard covers "this image is broken" and not "this image becomes broken
+when data arrives".** The same shape applies to anything persisted after a
+confirm: a config blob, a device key, a new log partition.
+
+**Not fixed.** Options, none of them free:
+
+- Re-arm the trial window around operations that persist new state (WiFi
+  provisioning, config writes), so a confirmed image goes back on probation
+  when it is about to act on something new.
+- Treat a reset loop as its own signal: count resets within N seconds of boot
+  in RTC memory and fall back to the other slot past a threshold, independent
+  of image state. This is the only option that also catches failures arriving
+  from the *outside*, e.g. a config written over BLE.
+- Accept it, and rely on the serial cable for this class. Defensible only while
+  every board is within reach, which stops being true at the first rollout.
+
+---
+
+## R29. [MEDIUM] Serial recovery needs `otadata`, not just the app image
+
+**Files:** none — build/flash procedure. **Seen on hardware, 2026-10-16.**
+
+Recovering the R27 boot loop by flashing a fixed image to `0x10000` did not
+work, and gave no indication of why: esptool reported `Hash of data verified`
+and the board carried on booting the broken firmware.
+
+`0x10000` is `app0`. The board was running `app1`, because the last OTA had
+switched `otadata` to it. Flashing one slot while the bootloader is pointed at
+the other is a silent no-op from the operator's side — it looks exactly like a
+failed flash, or like a board too broken to flash.
+
+The recovery flash must also write `boot_app0.bin` to `0xe000`, which resets
+`otadata` to boot `app0`:
+
+```
+esptool.py ... write_flash 0xe000 boot_app0.bin 0x10000 firmware.bin
+```
+
+`pio run -t upload` does this already. It is a hand-rolled esptool invocation —
+exactly what someone reaches for when a board is wedged — that omits it.
+
+---
+
+## R30. [MEDIUM] An ATT attribute is capped at 512 bytes, which is not the MTU
+
+**Files:** `ble_ota.cpp`'s Data characteristic (against `b55a3a3`), and any
+future characteristic sized off the MTU. **Seen on hardware, 2026-10-16.**
+
+After `NimBLEDevice::setMTU(517)` landed, a bench tool chunking firmware at
+`mtu - 3` (= 514) had every write silently rejected: the board received **154
+bytes of a 1 MB image**, acked nothing, and the only thing that noticed was
+the size check at commit.
+
+512 is the maximum length of an ATT attribute value in the spec, and it is a
+different number from the MTU. At MTU 517 the arithmetic that is right at every
+smaller MTU goes one past a hard limit.
+
+The app has always been correct here, by way of a `- 3 - 5` that looked like
+arbitrary padding and is load-bearing. It is now written as an explicit cap
+against 512 with the reason attached, because the next person to tidy that line
+would have broken OTA exactly as the bench tool did.
+
+**Worth knowing for the WiFi characteristics too:** nothing else in this
+contract is near 512 bytes today, so only OTA can hit it.
+
+---
+
+## R31. [HIGH] Money left the board in centavos where the wire is pesos
+
+**Files:** `build_payload()` in `src/checkin.cpp` (against `06b69e0`).
+
+**Seen on hardware, 2026-10-16.** The WiFi check-in sent
+`counters_lifetime_amount()` straight into its JSON, and the app showed
+**"Lifetime ₱2100"** for a board holding ₱21.00.
+
+The `counters_*` accessors return **centavos**. Both wires are **pesos** —
+`counters_serialize()` has done the `/100` for the BLE path all along, and
+`counters.h` names that division as *the* centavos→pesos boundary. The check-in
+carried a comment asserting it was already pesos; the comment was aspirational
+and the code was wrong.
+
+**Fixed** in `5840f7f`.
+
+**The pattern is the finding.** This is the second hundredfold money error
+found on this board in one day — the other being a `price_per_credit_cents`
+default of ₱10.00 against acceptors wired one pulse per peso, which made a ₱5
+coin register as ₱50. Errors of this class never look like errors. Nothing
+crashes, nothing is logged, and the number on screen is merely *good*. The only
+defences that have actually worked here are a unit named in the variable and a
+human comparing two screens.
+
+Any new path that carries money off this board should state its unit at the
+boundary and be checked against `AT+COUNTERS?` on real hardware before it is
+believed.
+
+
+> **R24–R26 are deliberately absent from this branch.** They were opened on
+> 2026-10-12 against the counters/event-log seq floor and live on
+> `fix/counters-seq-floor`, which has not been merged. The IDs are reserved so
+> the two branches cannot both claim them.
 ## Changelog
 
 | Date | Change |
 | --- | --- |
 | 2026-08-24 | First pass against `69260ad`. R1–R22 opened. |
 | 2026-09-22 | R23 opened (app team, from a field report) against `b416193`; fix on `fix/counters-unknown-day`. |
+| 2026-10-12 | R24–R26 opened against the counters/event-log seq floor, on `fix/counters-seq-floor` (unmerged — IDs reserved here). |
+| 2026-10-16 | R27–R31 opened from a full day of OTA and WiFi work on real hardware. First entries in this file actually observed on a board rather than read from the source; the caveat at the top is corrected to say so. R27, R30 and R31 fixed the same day; R28 and R29 are open. |

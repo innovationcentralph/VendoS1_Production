@@ -12,6 +12,8 @@
 #include "wdt.h"
 #include "version.h"
 #include "ota_guard.h"
+#include "wifi_sta.h"
+#include "checkin.h"
 #ifdef ENABLE_CLI
 #include "cli.h"
 #endif
@@ -21,6 +23,7 @@
 #include "ble_diagnostics.h"
 #include "ble_command.h"
 #include "ble_ota.h"
+#include "ble_wifi.h"
 #endif
 
 // =============================================================================
@@ -203,6 +206,17 @@ void setup() {
         esp_restart();
     }
 
+    // After BLE, because provisioning arrives over it, and after identity:
+    // check-ins are addressed by the board's own deviceId. Non-blocking, and a
+    // no-op on a board that has never been given credentials, which is every
+    // board today.
+    wifi_init();
+
+    // After wifi_init() and identity: it reports as this board, over that
+    // link. Creates one task that sleeps until both exist, so an
+    // unprovisioned board pays for a task control block and nothing else.
+    checkin_init();
+
     // Last, because its self-test asks whether BLE is reachable and whether the
     // app task is checking in — both of which have to exist first. On an
     // ordinary boot this is a no-op; it only does anything when the running
@@ -261,7 +275,11 @@ void loop() {
     // finalise are seconds-long operations that must not run inside a GATT
     // callback. See src/ble_ota.h.
     ble_ota_service();
+    ble_wifi_service();   // provisioning mailbox + WiFi Status notifies
 #endif
+    // Outside ENABLE_BLE: a board already provisioned stays on the network and
+    // keeps checking in whether or not this build has a GATT server.
+    wifi_service();
 
 #ifdef ENABLE_CLI
     while (Serial.available() > 0) {
