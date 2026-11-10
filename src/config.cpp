@@ -37,7 +37,20 @@ static const AppConfig kDefaults = {
     3,                  // beep_end_count
     70,                 // beep_end_on_ms
     80,                 // beep_off_ms
-    1000,               // price_per_credit_cents (P10.00)
+    // P1.00 per coin pulse, changed from P10.00 on 2026-10-11 after a reset to
+    // defaults on a real machine started counting a P5 coin as P50.
+    //
+    // This number is the peso value of ONE PULSE, not of one credit - the name
+    // is misleading and kept only for STM32 parity. The shipping coin acceptor
+    // is wired one pulse per peso, so P10.00 here meant every coin counted ten
+    // times its worth. Nothing failed: the totals just silently inflated, which
+    // an operator can run on for days before the figures look wrong.
+    //
+    // A default that does not match the hardware we ship is a trap, and the
+    // reset-to-defaults command added the same day made it reachable from the
+    // app. DIVERGENCE from the STM32 upstream, which still defaults to 1000 -
+    // the same change belongs there if its acceptors are wired the same way.
+    100,                // price_per_credit_cents (P1.00 per pulse)
     true,               // coin_active_high — idle LOW, pulse HIGH (see config.h)
 };
 

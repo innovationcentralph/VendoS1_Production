@@ -122,6 +122,49 @@
 // code. ALSO PROVISIONAL.
 #define CMD_OP_TEST_BUTTON   0x0B
 
+// Zero this machine's takings - today_amount, today_sessions and
+// lifetime_amount - persisted immediately. `param` MUST be the magic
+// CMD_RESET_EARNINGS_CONFIRM; any other value is refused.
+//
+// First code outside the provisional 0x08-0x0B block, so it does not depend on
+// A13 being settled. Requested by the app team (2026-10-11) for a per-machine
+// "reset data" action, where the app clears its own records for the machine on
+// the same confirmation.
+//
+// THE MAGIC PARAM IS NOT CEREMONY. Every other op here takes param 0 or 1, so
+// a truncated, misaligned or stale frame that happens to carry this op code
+// with a zero param is a realistic way to wipe a machine's lifetime takings by
+// accident. Requiring a specific 32-bit value means a malformed write cannot
+// do it - it has to be meant.
+//
+// Refused during a session (see op_is_destructive): coins can be mid-flight,
+// and zeroing the totals underneath a vend in progress loses money that has
+// already been taken.
+//
+// Does NOT reset AppConfig, and does NOT rewind last_seq. See
+// counters_reset_earnings() for why the sequence number has to stay monotonic.
+#define CMD_OP_RESET_EARNINGS 0x0C
+#define CMD_RESET_EARNINGS_CONFIRM 0x52455345u  // "RESE", little-endian on the wire
+
+// Restore AppConfig to the firmware's own factory defaults (kDefaults in
+// config.cpp), persisted immediately. `param` MUST be
+// CMD_RESET_CONFIG_CONFIRM. Like every other config write, the running app
+// task keeps the old values until AT+RESET or a power cycle - EXCEPT
+// coin_active_high, which config applies live.
+//
+// Deliberately a firmware op rather than the app writing a defaults frame to
+// Config (f005). The app would have to carry its own copy of all 21 default
+// values, which is a fourth place for the same numbers to live and drift
+// (CLAUDE.md already warns about the three that must agree). This way the
+// board applies the defaults it actually ships with, and the app only has to
+// know that it asked.
+//
+// Separate from resetEarnings on purpose: an operator clearing last month's
+// takings is not asking for their coin price and relay timing to change, and
+// a technician restoring settings is not asking to wipe the money.
+#define CMD_OP_RESET_CONFIG 0x0D
+#define CMD_RESET_CONFIG_CONFIRM 0x43464721u  // "CFG!", little-endian on the wire
+
 // How long testRelay energises the relay. Long enough for a technician to hear
 // the click and see the load twitch, short enough that it cannot be mistaken
 // for a vend or dispense anything worth money.

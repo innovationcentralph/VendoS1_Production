@@ -1,6 +1,7 @@
 #include "ble_command.h"
 #include "app.h"
 #include "config.h"
+#include "counters.h"
 #include "diag.h"
 #include "periph.h"
 #include <Arduino.h>
@@ -48,6 +49,8 @@ static const char* op_name(uint8_t op) {
         case CMD_OP_TEST_MODE:     return "test_mode";
         case CMD_OP_TEST_COIN_SLOT: return "test_coin_slot";
         case CMD_OP_TEST_BUTTON:   return "test_button";
+        case CMD_OP_RESET_EARNINGS: return "reset_earnings";
+        case CMD_OP_RESET_CONFIG:   return "reset_config";
         default:                  return "unknown";
     }
 }
@@ -66,6 +69,13 @@ static bool op_is_physical(uint8_t op) {
 // depends on the param. Entering test mode needs an idle board; leaving must
 // work from anywhere, including from a state the generic gate would refuse -
 // otherwise the exit op could be locked out by the very mode it exits.
+// Drives no output, so op_is_physical() does not cover it - but it destroys
+// money records, and a session in progress may have coins already counted and
+// not yet banked. Same idle requirement, different reason.
+static bool op_is_destructive(uint8_t op) {
+    return op == CMD_OP_RESET_EARNINGS || op == CMD_OP_RESET_CONFIG;
+}
+
 static bool op_has_own_gate(uint8_t op) {
     return op == CMD_OP_TEST_MODE || op == CMD_OP_TEST_COIN_SLOT ||
            op == CMD_OP_TEST_BUTTON;
@@ -89,7 +99,8 @@ static void execute(const PendingCommand& c) {
     // refused would be its own surprise.
     app_test_mode_poke();
 
-    if (op_is_physical(c.op) && !op_has_own_gate(c.op) && !app_state_allows_physical_op()) {
+    if ((op_is_physical(c.op) || op_is_destructive(c.op)) && !op_has_own_gate(c.op) &&
+        !app_state_allows_physical_op()) {
         // Dropped, not deferred — running it minutes later, after the operator
         // has stopped watching, is worse than not running it. Invisible to the
         // app by construction (write-only characteristic); serial is the only
@@ -111,6 +122,37 @@ static void execute(const PendingCommand& c) {
             s_ever_acked     = true;
             Serial.print("BLE sync_ack — backend has everything up to seq ");
             Serial.println(c.param);
+            break;
+
+        case CMD_OP_RESET_EARNINGS:
+            // The magic param is the whole safety story for this op - see the
+            // header. A wrong one is logged rather than silently ignored:
+            // "I pressed reset and nothing happened", with no trace anywhere,
+            // is the worst outcome for an operator stood in front of a board.
+            if (c.param != CMD_RESET_EARNINGS_CONFIRM) {
+                Serial.print("BLE reset_earnings REFUSED - bad confirm param 0x");
+                Serial.println(c.param, HEX);
+                break;
+            }
+            counters_reset_earnings();
+            Serial.println("BLE reset_earnings - today and lifetime takings zeroed");
+            break;
+
+        case CMD_OP_RESET_CONFIG:
+            if (c.param != CMD_RESET_CONFIG_CONFIRM) {
+                Serial.print("BLE reset_config REFUSED - bad confirm param 0x");
+                Serial.println(c.param, HEX);
+                break;
+            }
+            {
+                AppConfig defaults;
+                config_defaults(&defaults);
+                config_save(&defaults);
+            }
+            // Same caveat as every other config write, and the reason the CLI
+            // prints it too: the running app task is still using the old
+            // values until a reset.
+            Serial.println("BLE reset_config - factory defaults saved; reset to apply");
             break;
 
         case CMD_OP_CLEAR_ERRORS:

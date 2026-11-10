@@ -39,9 +39,31 @@ The structure is deliberately kept parallel so the two codebases stay diffable.
 | — | `src/ble_config.*`, `ble_timesync.*`, `ble_livecounters.*`, `ble_deviceinfo.*` | **New** — BLE GATT server and characteristics |
 | `lib/Wire/` (vendored) | — | Dropped; the vendored copy existed for an STM32-specific buffer fix |
 
-## 2. The six changes that are behaviour, not mechanics
+## 2. The changes that are behaviour, not mechanics
 
-Everything else is a mechanical translation. These six are worth knowing about.
+Everything else is a mechanical translation. These are worth knowing about.
+
+### 2.0 Default `price_per_credit_cents`: 1000 (P10.00) -> 100 (P1.00)
+
+**Changed 2026-10-11, and it is a money divergence, so it is listed first.**
+
+The field is the peso value of **one coin pulse**, not of one credit; the name
+is misleading and was kept for parity. The coin acceptors on the shipping S1
+are wired **one pulse per peso**, so the inherited default of P10.00 counted
+every coin at ten times its worth.
+
+Found on a real machine the same day the app gained a reset-to-defaults
+command: a reset put the board back to P10.00/pulse, and a P5 coin immediately
+registered as P50. Nothing errored - the totals just silently inflated, which
+an operator can run on for days before the numbers look wrong enough to
+question. A default that does not match the hardware we ship is a trap, and
+the new reset made it reachable from a phone.
+
+**The STM32 still defaults to 1000.** If its acceptors are wired the same way,
+the same change belongs there; if they are not, this stays a deliberate
+divergence and this note is the record of why. No magic bump was needed - the
+struct layout did not change, so existing boards keep their stored price and
+only a fresh or reset board sees the new default.
 
 ### 2.1 Watchdog: internal 25 s IWDG → external ~100 ms TPL5010
 

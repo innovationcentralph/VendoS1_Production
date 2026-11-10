@@ -169,6 +169,27 @@ void counters_record_test_coin(uint32_t cents);
 // be read as a coin from the current run.
 void counters_reset_test_amount();
 
+// Zero this machine's takings: today_amount, today_sessions and
+// lifetime_amount, persisted immediately.
+//
+// The one deliberate omission is `last_seq`, and it is not an oversight.
+// Rewinding it corrupts backend delta sync (see CLAUDE.md's storage rule), and
+// the event log in the `vendolog` partition still holds records at the old
+// numbers - restarting the sequence would mint duplicates of seqs already
+// written and break the app's pagination, which treats seq as monotonic. The
+// takings are the thing being reset; the log's numbering is bookkeeping that
+// has to stay strictly increasing for the life of the board.
+//
+// Saves straight to NVS rather than waiting for the debounced idle flush: this
+// only ever runs because an operator deliberately asked for it, and a reboot in
+// the next few seconds silently restoring the old totals would be baffling.
+//
+// Does NOT touch AppConfig. Resetting settings is a separate operation with a
+// separate trigger (AT+EEPROM_RESET, or the app writing a defaults frame to
+// Config f005) - an operator clearing last month's takings is not asking for
+// their coin price and relay timing to change underneath them.
+void counters_reset_earnings();
+
 // Serialises the 18-byte Live Counters frame (little-endian): today_amount u32
 // @0, today_sessions u16 @4, lifetime_amount u32 @6, last_seq u32 @10,
 // test_amount u32 @14 (PESOS, RAM-only, 0 outside test mode).
